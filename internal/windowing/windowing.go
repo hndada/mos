@@ -7,6 +7,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hndada/mos/apps"
 	"github.com/hndada/mos/internal/draws"
+	"github.com/hndada/mos/internal/event"
 )
 
 const (
@@ -14,22 +15,28 @@ const (
 	DurationClosing = 800 * time.Millisecond
 )
 
+// WindowingServer is the OS compositor. It owns the layer stack and dispatches
+// navigation, lifecycle, and system events via the Bus.
 type WindowingServer struct {
 	ScreenW float64
 	ScreenH float64
-	Logger  func(string)
 
-	wallpaper      Wallpaper
-	home           Home
-	hist           History
-	kb             Keyboard
-	statusBar      StatusBar
-	curtain        Curtain
-	lock           Lock
+	// Bus is the OS-wide event bus. Apps subscribe here; the server publishes here.
+	Bus *event.Bus
+
+	Logger func(string)
+
+	wallpaper Wallpaper
+	home      Home
+	hist      History
+	kb        Keyboard
+	statusBar StatusBar
+	curtain   Curtain
+	lock      Lock
+
 	showingRecents bool
-
-	windows     []*Window
-	screenshots []draws.Image
+	windows        []*Window
+	screenshots    []draws.Image
 }
 
 func (ws *WindowingServer) SetLogger(logger func(string)) { ws.Logger = logger }
@@ -40,15 +47,19 @@ func (ws *WindowingServer) log(msg string) {
 	}
 }
 
+func (ws *WindowingServer) publish(e event.Event) {
+	if ws.Bus != nil {
+		ws.Bus.Publish(e)
+	}
+}
+
 func (ws *WindowingServer) SetHome(h Home)           { ws.home = h }
 func (ws *WindowingServer) SetWallpaper(w Wallpaper) { ws.wallpaper = w }
 func (ws *WindowingServer) SetHistory(h History)     { ws.hist = h }
 func (ws *WindowingServer) SetKeyboard(k Keyboard)   { ws.kb = k }
 func (ws *WindowingServer) SetStatusBar(s StatusBar) { ws.statusBar = s }
-func (ws *WindowingServer) SetCurtain(s Curtain) {
-	ws.curtain = s
-}
-func (ws *WindowingServer) SetLock(l Lock) { ws.lock = l }
+func (ws *WindowingServer) SetCurtain(s Curtain)     { ws.curtain = s }
+func (ws *WindowingServer) SetLock(l Lock)           { ws.lock = l }
 
 func (ws *WindowingServer) ShowKeyboard() {
 	if ws.kb != nil && !ws.kb.IsVisible() {
@@ -84,14 +95,13 @@ func (ws *WindowingServer) ToggleCurtain() {
 	ws.curtain.Toggle()
 	if ws.curtain.IsVisible() {
 		ws.log("curtain show")
-		return
+	} else {
+		ws.log("curtain hide")
 	}
-	ws.log("curtain hide")
 }
 
 func (ws *WindowingServer) SetScreenshots(shots []draws.Image) { ws.screenshots = shots }
-
-func (ws *WindowingServer) Screenshots() []draws.Image { return ws.screenshots }
+func (ws *WindowingServer) Screenshots() []draws.Image         { return ws.screenshots }
 
 func (ws *WindowingServer) AddScreenshot(src draws.Image) {
 	if src.IsEmpty() {
@@ -105,10 +115,12 @@ func (ws *WindowingServer) AddScreenshot(src draws.Image) {
 }
 
 func (ws *WindowingServer) launchApp(iconPos, iconSize draws.XY, clr color.RGBA, appID string) {
-	w := NewWindow(iconPos, iconSize, clr, appID, ws.ScreenW, ws.ScreenH)
+	ctx := newWindowContext(ws)
+	w := NewWindow(iconPos, iconSize, clr, appID, ws.ScreenW, ws.ScreenH, ctx)
 	ws.windows = append(ws.windows, w)
 	ws.log("launch " + appID)
 	ws.log("window " + w.AppID() + ": " + LifecycleInitializing.String() + " -> " + w.lifecycle.String())
+	ws.publish(event.Lifecycle{AppID: appID, Phase: event.PhaseCreated})
 }
 
 func (ws *WindowingServer) ReceiveCall() {
@@ -126,18 +138,19 @@ func (ws *WindowingServer) ReceiveCall() {
 	ws.log("incoming call")
 }
 
-func (ws *WindowingServer) StartCall() {
-	ws.ReceiveCall()
-}
+func (ws *WindowingServer) StartCall() { ws.ReceiveCall() }
 
 func (ws *WindowingServer) RestoreActiveApp(state AppState) {
 	if state.ID == "" {
 		return
 	}
-	w := NewRestoredWindow(state, ws.ScreenW, ws.ScreenH)
+	ctx := newWindowContext(ws)
+	w := NewRestoredWindow(state, ws.ScreenW, ws.ScreenH, ctx)
 	ws.windows = append(ws.windows, w)
 	ws.log("restore " + state.ID)
 	ws.log("window " + w.AppID() + ": " + LifecycleInitializing.String() + " -> " + w.lifecycle.String())
+	ws.publish(event.Lifecycle{AppID: state.ID, Phase: event.PhaseCreated})
+	ws.publish(event.Lifecycle{AppID: state.ID, Phase: event.PhaseResumed})
 }
 
 func (ws *WindowingServer) activeWindow() (*Window, bool) {
@@ -197,8 +210,18 @@ func (ws *WindowingServer) dismissTopWindowToCard() {
 }
 
 func (ws *WindowingServer) logLifecycleChange(w *Window, before Lifecycle) {
-	if before != w.lifecycle {
-		ws.log("window " + w.AppID() + ": " + before.String() + " -> " + w.lifecycle.String())
+	if before == w.lifecycle {
+		return
+	}
+	ws.log("window " + w.AppID() + ": " + before.String() + " -> " + w.lifecycle.String())
+
+	switch w.lifecycle {
+	case LifecycleShown:
+		ws.publish(event.Lifecycle{AppID: w.AppID(), Phase: event.PhaseResumed})
+	case LifecycleHiding:
+		ws.publish(event.Lifecycle{AppID: w.AppID(), Phase: event.PhasePaused})
+	case LifecycleDestroyed:
+		ws.publish(event.Lifecycle{AppID: w.AppID(), Phase: event.PhaseDestroyed})
 	}
 }
 
@@ -209,10 +232,11 @@ func (ws *WindowingServer) GoHome() {
 	}
 	if w, ok := ws.activeWindow(); ok {
 		if ws.hist != nil {
-			ws.hist.AddCard(w.HistoryEntry(ws.screenshots))
+			ws.hist.AddCard(w.HistoryEntry())
 		}
 		ws.dismissTopWindowToCard()
 	}
+	ws.publish(event.Navigation{Action: event.NavHome})
 	ws.log("home")
 }
 
@@ -237,9 +261,10 @@ func (ws *WindowingServer) GoBack() {
 	}
 	if w, ok := ws.activeWindow(); ok {
 		if ws.hist != nil {
-			ws.hist.AddCard(w.HistoryEntry(ws.screenshots))
+			ws.hist.AddCard(w.HistoryEntry())
 		}
 		ws.dismissTopWindow()
+		ws.publish(event.Navigation{Action: event.NavBack})
 		ws.log("back")
 		return
 	}
@@ -258,13 +283,14 @@ func (ws *WindowingServer) GoRecents() {
 	ws.showingRecents = true
 	if w, ok := ws.activeWindow(); ok {
 		if ws.hist != nil {
-			ws.hist.AddCard(w.HistoryEntry(ws.screenshots))
+			ws.hist.AddCard(w.HistoryEntry())
 		}
 		ws.dismissTopWindowToCard()
 	}
 	if ws.hist != nil {
 		ws.hist.Show()
 	}
+	ws.publish(event.Navigation{Action: event.NavRecents})
 	ws.log("recents show")
 }
 
@@ -308,12 +334,21 @@ func (ws *WindowingServer) Update() {
 	if ws.lock != nil {
 		ws.lock.Update()
 	}
+
 	for _, w := range ws.windows {
 		before := w.lifecycle
 		w.Update()
 		ws.logLifecycleChange(w, before)
+
+		// Handle app-initiated launches (ctx.Launch).
+		if id := w.app.ctx.drainLaunch(); id != "" {
+			center := draws.XY{X: ws.ScreenW / 2, Y: ws.ScreenH / 2}
+			size := draws.XY{X: ws.ScreenW * 0.5, Y: ws.ScreenH * 0.5}
+			ws.launchApp(center, size, w.app.Color, id)
+		}
 	}
-	// Once the window launched from a history card is fully open, hide history.
+
+	// Once a card-launched window is fully open, hide the recents overlay.
 	if ws.showingRecents {
 		for _, w := range ws.windows {
 			if w.lifecycle == LifecycleShown {
@@ -325,12 +360,13 @@ func (ws *WindowingServer) Update() {
 			}
 		}
 	}
-	// purge fully hidden windows
+
+	// Purge fully hidden windows: fire OnDestroy, then remove from the list.
 	live := ws.windows[:0]
 	for _, w := range ws.windows {
 		if w.lifecycle == LifecycleHidden {
 			before := w.lifecycle
-			w.lifecycle = LifecycleDestroyed
+			w.Destroy() // fires OnDestroy, sets LifecycleDestroyed
 			ws.logLifecycleChange(w, before)
 			continue
 		}
@@ -341,7 +377,8 @@ func (ws *WindowingServer) Update() {
 	ws.windows = live
 }
 
-// Draw composites back-to-front: wallpaper ??home|recents ??windows ??keyboard ??status bar ??lock.
+// Draw composites back-to-front:
+// wallpaper → home | recents → windows → keyboard → status bar → curtain → lock.
 func (ws *WindowingServer) Draw(dst draws.Image) {
 	if ws.wallpaper != nil {
 		ws.wallpaper.Draw(dst)
@@ -353,7 +390,7 @@ func (ws *WindowingServer) Draw(dst draws.Image) {
 		ws.hist.Draw(dst)
 	}
 	for _, w := range ws.windows {
-		w.Draw(dst, ws.screenshots)
+		w.Draw(dst)
 	}
 	if ws.kb != nil {
 		ws.kb.Draw(dst)

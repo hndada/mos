@@ -67,6 +67,8 @@ func NewDefaultHome(screenW, screenH float64) *DefaultHome {
 				appID = "call"
 			case 3:
 				appID = "scene-test"
+			case 4:
+				appID = "hello"
 			}
 			icons = append(icons, homeIcon{sprite: sp, color: clr, appID: appID})
 		}

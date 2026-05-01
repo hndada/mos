@@ -6,11 +6,13 @@ import (
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hndada/mos/apps"
+	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/input"
 	"github.com/hndada/mos/internal/tween"
 )
 
+// Lifecycle tracks the animation / activation phase of a Window.
 type Lifecycle int
 
 const (
@@ -48,8 +50,8 @@ func (l Lifecycle) String() string {
 	}
 }
 
-// Window owns its canvas. Each visual property is driven by its own Tween so
-// any of them can be animated independently at any point in the lifecycle.
+// Window owns its off-screen canvas. Every visual property is driven by its
+// own Tween so any combination of properties can animate simultaneously.
 type Window struct {
 	app       *App
 	canvas    draws.Image
@@ -84,15 +86,15 @@ func staticAnim(value float64) tween.Tween {
 	return tw
 }
 
-func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW, screenH float64) *Window {
+// NewWindow creates a window that animates open from iconPos/iconSize.
+func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW, screenH float64, ctx *windowContext) *Window {
 	canvas := draws.CreateImage(screenW, screenH)
 	canvas.Fill(clr)
 	if appID == "" {
 		appID = AppIDColor
 	}
-
 	return &Window{
-		app:       NewApp(appID, clr, screenW, screenH),
+		app:       NewApp(appID, clr, ctx),
 		canvas:    canvas,
 		lifecycle: LifecycleShowing,
 		clr:       clr,
@@ -108,14 +110,16 @@ func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW
 	}
 }
 
-func NewRestoredWindow(state AppState, screenW, screenH float64) *Window {
+// NewRestoredWindow creates a window that is immediately fully open (no open animation).
+// Used to re-display the active app after a display-mode change.
+func NewRestoredWindow(state AppState, screenW, screenH float64, ctx *windowContext) *Window {
 	if state.ID == "" {
 		state.ID = AppIDColor
 	}
 	canvas := draws.CreateImage(screenW, screenH)
 	canvas.Fill(state.Color)
-	return &Window{
-		app:       NewApp(state.ID, state.Color, screenW, screenH),
+	w := &Window{
+		app:       NewApp(state.ID, state.Color, ctx),
 		canvas:    canvas,
 		lifecycle: LifecycleShown,
 		clr:       state.Color,
@@ -129,13 +133,19 @@ func NewRestoredWindow(state AppState, screenW, screenH float64) *Window {
 		sizeH:     staticAnim(screenH),
 		alpha:     staticAnim(1),
 	}
+	// The app is immediately visible, so fire OnResume right away.
+	if lc, ok := w.app.content.(mosapp.Lifecycle); ok {
+		lc.OnResume()
+	}
+	return w
 }
 
+// Dismiss animates the window closed, shrinking back to the icon it launched from.
 func (w *Window) Dismiss() {
 	w.DismissTo(w.iconPos, w.iconSize)
 }
 
-// DismissTo animates the window shrinking to an arbitrary target center and size.
+// DismissTo animates the window closed, shrinking to an arbitrary target.
 func (w *Window) DismissTo(targetCenter, targetSize draws.XY) {
 	if w.lifecycle != LifecycleShown && w.lifecycle != LifecycleShowing {
 		return
@@ -146,6 +156,17 @@ func (w *Window) DismissTo(targetCenter, targetSize draws.XY) {
 	w.sizeW = newAnim(w.sizeW.Value(), targetSize.X, DurationClosing)
 	w.sizeH = newAnim(w.sizeH.Value(), targetSize.Y, DurationClosing)
 	w.alpha = newAnim(1, 0, DurationClosing)
+	if lc, ok := w.app.content.(mosapp.Lifecycle); ok {
+		lc.OnPause()
+	}
+}
+
+// Destroy fires OnDestroy on the app content and marks the window as destroyed.
+func (w *Window) Destroy() {
+	if lc, ok := w.app.content.(mosapp.Lifecycle); ok {
+		lc.OnDestroy()
+	}
+	w.lifecycle = LifecycleDestroyed
 }
 
 func (w *Window) Update() {
@@ -154,10 +175,14 @@ func (w *Window) Update() {
 	w.sizeW.Update()
 	w.sizeH.Update()
 	w.alpha.Update()
+
 	switch w.lifecycle {
 	case LifecycleShowing:
 		if w.sizeW.IsFinished() {
 			w.lifecycle = LifecycleShown
+			if lc, ok := w.app.content.(mosapp.Lifecycle); ok {
+				lc.OnResume()
+			}
 		}
 	case LifecycleShown:
 		x, y := input.MouseCursorPosition()
@@ -172,13 +197,13 @@ func (w *Window) Update() {
 	}
 }
 
-func (w *Window) UpdateCanvas(screenshots []draws.Image) {
-	w.app.Prepare(screenshots)
-	w.app.Draw(w.canvas, screenshots)
+func (w *Window) updateCanvas() {
+	w.app.Draw(w.canvas)
 }
 
-func (w *Window) HistoryEntry(screenshots []draws.Image) apps.HistoryEntry {
-	w.UpdateCanvas(screenshots)
+// HistoryEntry renders the current app frame into a snapshot for the recents carousel.
+func (w *Window) HistoryEntry() apps.HistoryEntry {
+	w.updateCanvas()
 	size := w.canvas.Size()
 	snapshot := draws.CreateImage(size.X, size.Y)
 	snapshot.DrawImage(w.canvas.Image, &ebiten.DrawImageOptions{})
@@ -189,17 +214,14 @@ func (w *Window) HistoryEntry(screenshots []draws.Image) apps.HistoryEntry {
 	}
 }
 
-func (w *Window) AppState() AppState {
-	return AppState{ID: w.app.ID, Color: w.clr}
-}
+func (w *Window) AppState() AppState { return AppState{ID: w.app.ID, Color: w.clr} }
+func (w *Window) AppID() string      { return w.app.ID }
 
-func (w *Window) AppID() string { return w.app.ID }
-
-func (w *Window) Draw(dst draws.Image, screenshots []draws.Image) {
+func (w *Window) Draw(dst draws.Image) {
 	if !w.lifecycle.Visible() {
 		return
 	}
-	w.UpdateCanvas(screenshots)
+	w.updateCanvas()
 	s := draws.NewSprite(w.canvas)
 	s.Position = draws.XY{X: w.posX.Value(), Y: w.posY.Value()}
 	s.Size = draws.XY{X: w.sizeW.Value(), Y: w.sizeH.Value()}
