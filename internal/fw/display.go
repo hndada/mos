@@ -13,7 +13,8 @@ const (
 type Display struct {
 	W, H    float64
 	kind    DisplayKind
-	id      int
-	spec    string
 	powered bool
 }
+
+func (d *Display) Powered() bool      { return d.powered }
+func (d *Display) SetPowered(on bool) { d.powered = on }
