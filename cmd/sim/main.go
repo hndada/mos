@@ -8,6 +8,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hndada/mos/apps"
 	"github.com/hndada/mos/internal/draws"
+	"github.com/hndada/mos/internal/event"
 	"github.com/hndada/mos/internal/input"
 	"github.com/hndada/mos/internal/windowing"
 	"github.com/hndada/mos/ui"
@@ -330,7 +331,7 @@ func (s *simulator) applyMode() {
 	active := group[s.activeDisplay]
 
 	s.canvas = draws.CreateImage(active.w, active.h)
-	s.ws = windowing.WindowingServer{ScreenW: active.w, ScreenH: active.h}
+	s.ws = windowing.WindowingServer{ScreenW: active.w, ScreenH: active.h, Bus: event.NewBus()}
 	s.ws.SetLogger(s.logLine)
 	s.ws.SetScreenshots(s.screenshots)
 	s.ws.SetWallpaper(apps.NewDefaultWallpaper(active.w, active.h))
