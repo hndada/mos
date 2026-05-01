@@ -14,31 +14,49 @@ import (
 const MaxHistory = 50
 
 const (
-	hCardWFrac   = 0.84 // card width as fraction of screenW
-	hCardHFrac   = 0.65 // card height as fraction of screenH
-	hStepFrac    = 0.74 // step between cards; < hCardWFrac → cards overlap + adjacent cards peek
-	cardBorderW  = 3.0
-	durationShow = 350 * time.Millisecond
+	hCardMaxWFrac = 0.84 // max card width as fraction of screenW
+	hCardMaxHFrac = 0.65 // max card height as fraction of screenH
+	hStepFrac     = 0.74 // step between cards; < hCardWFrac → cards overlap + adjacent cards peek
+	cardBorderW   = 3.0
+	durationShow  = 350 * time.Millisecond
 )
 
 type History interface {
-	AddCard(clr color.RGBA)
+	AddCard(entry HistoryEntry)
 	RemoveCard()
 	Show()
-	TappedCard() (pos, size draws.XY, clr color.RGBA, ok bool)
+	Hide()
+	IsVisible() bool
+	IsInteractive() bool
+	TappedCard() (pos, size draws.XY, entry HistoryEntry, ok bool)
 	// CardRect returns the center and size of the card that would appear at
 	// position 0 (newest) when the carousel is fully reset. Used to animate
 	// windows shrinking toward the card on dismiss.
 	CardRect() (center, size draws.XY)
-	// Colors returns card colors newest-first, for persisting across screen changes.
-	Colors() []color.RGBA
+	// Entries returns app history newest-first, for persisting across screen changes.
+	Entries() []HistoryEntry
 	Update()
 	Draw(dst draws.Image)
 }
 
+type historyState int
+
+const (
+	historyHidden historyState = iota
+	historyShowing
+	historyShown
+	historyHiding
+)
+
+type HistoryEntry struct {
+	AppID    string
+	Color    color.RGBA
+	Snapshot draws.Image
+}
+
 type histCard struct {
-	bg  draws.Sprite
-	clr color.RGBA
+	bg    draws.Sprite
+	entry HistoryEntry
 }
 
 // DefaultHistory shows recent apps as a horizontally scrollable card carousel.
@@ -48,9 +66,10 @@ type DefaultHistory struct {
 	scroll      ui.ScrollBox
 	overlay     draws.Sprite
 	alpha       tween.Tween
+	state       historyState
 	tappedPos   draws.XY
 	tappedSize  draws.XY
-	tappedColor color.RGBA
+	tappedEntry HistoryEntry
 	hasTap      bool
 	screenW     float64
 	screenH     float64
@@ -65,9 +84,14 @@ type DefaultHistory struct {
 }
 
 func NewDefaultHistory(screenW, screenH float64) *DefaultHistory {
-	cardW := screenW * hCardWFrac
-	cardH := screenH * hCardHFrac
-	statusBarH := screenH * statusBarFrac
+	return NewDefaultHistoryWithCardAspect(screenW, screenH, screenW, screenH)
+}
+
+func NewDefaultHistoryWithCardAspect(screenW, screenH, aspectW, aspectH float64) *DefaultHistory {
+	maxCardW := screenW * hCardMaxWFrac
+	maxCardH := screenH * hCardMaxHFrac
+	cardW, cardH := fitAspect(maxCardW, maxCardH, aspectW, aspectH)
+	statusBarH := statusBarHeight
 	cardTopY := statusBarH + (screenH-statusBarH-cardH)/2
 	hStep := screenW * hStepFrac
 
@@ -91,21 +115,62 @@ func NewDefaultHistory(screenW, screenH float64) *DefaultHistory {
 	return h
 }
 
+func fitAspect(maxW, maxH, aspectW, aspectH float64) (w, h float64) {
+	if aspectW <= 0 || aspectH <= 0 {
+		return maxW, maxH
+	}
+	ratio := aspectW / aspectH
+	w = maxW
+	h = w / ratio
+	if h > maxH {
+		h = maxH
+		w = h * ratio
+	}
+	return w, h
+}
+
 func (h *DefaultHistory) Show() {
 	// Snap scroll to card 0 so the most-recent card is centered on entry.
 	off := h.scroll.Offset()
 	h.scroll.ScrollBy(draws.XY{X: -off.X, Y: -off.Y})
-
-	var tw tween.Tween
-	tw.MaxLoop = 1
-	tw.Add(0, 1, durationShow, tween.EaseOutExponential)
-	tw.Start()
-	h.alpha = tw
+	h.state = historyShowing
+	h.alpha = h.newAlphaTween(h.alphaValue(), 1)
 }
 
-func (h *DefaultHistory) AddCard(clr color.RGBA) {
+func (h *DefaultHistory) Hide() {
+	if h.state == historyHidden || h.state == historyHiding {
+		return
+	}
+	h.state = historyHiding
+	h.alpha = h.newAlphaTween(h.alphaValue(), 0)
+}
+
+func (h *DefaultHistory) IsVisible() bool {
+	return h.state != historyHidden || h.alphaValue() > 0
+}
+
+func (h *DefaultHistory) IsInteractive() bool {
+	return h.state == historyShowing || h.state == historyShown
+}
+
+func (h *DefaultHistory) alphaValue() float64 {
+	if len(h.alpha.Units) == 0 {
+		return 0
+	}
+	return h.alpha.Value()
+}
+
+func (h *DefaultHistory) newAlphaTween(from, to float64) tween.Tween {
+	var tw tween.Tween
+	tw.MaxLoop = 1
+	tw.Add(from, to-from, durationShow, tween.EaseOutExponential)
+	tw.Start()
+	return tw
+}
+
+func (h *DefaultHistory) AddCard(entry HistoryEntry) {
 	for i, c := range h.cards {
-		if c.clr == clr {
+		if c.entry.AppID == entry.AppID && c.entry.Color == entry.Color {
 			h.cards = append(h.cards[:i], h.cards[i+1:]...)
 			break
 		}
@@ -117,13 +182,22 @@ func (h *DefaultHistory) AddCard(clr color.RGBA) {
 	img := draws.CreateImage(h.cardW, h.cardH)
 	img.Fill(color.RGBA{210, 210, 215, 255})
 	inner := draws.CreateImage(h.cardW-2*cardBorderW, h.cardH-2*cardBorderW)
-	inner.Fill(clr)
+	inner.Fill(entry.Color)
+	if !entry.Snapshot.IsEmpty() {
+		shot := draws.NewSprite(entry.Snapshot)
+		shotSize := entry.Snapshot.Size()
+		innerSize := inner.Size()
+		scale := min(innerSize.X/shotSize.X, innerSize.Y/shotSize.Y)
+		shot.Size = shotSize.Scale(scale)
+		shot.Locate(innerSize.X/2, innerSize.Y/2, draws.CenterMiddle)
+		shot.Draw(inner)
+	}
 	op := &ebiten.DrawImageOptions{}
 	op.GeoM.Translate(cardBorderW, cardBorderW)
 	img.DrawImage(inner.Image, op)
 
 	sp := draws.NewSprite(img)
-	h.cards = append([]histCard{{bg: sp, clr: clr}}, h.cards...)
+	h.cards = append([]histCard{{bg: sp, entry: entry}}, h.cards...)
 	h.recalcPositions()
 }
 
@@ -165,21 +239,40 @@ func (h *DefaultHistory) CardRect() (center, size draws.XY) {
 	return
 }
 
-// Colors returns card colors newest-first for persistence across screen changes.
-func (h *DefaultHistory) Colors() []color.RGBA {
-	clrs := make([]color.RGBA, len(h.cards))
+// Entries returns app history newest-first for persistence across screen changes.
+func (h *DefaultHistory) Entries() []HistoryEntry {
+	entries := make([]HistoryEntry, len(h.cards))
 	for i, c := range h.cards {
-		clrs[i] = c.clr
+		entries[i] = c.entry
 	}
-	return clrs
+	return entries
 }
 
-func (h *DefaultHistory) TappedCard() (pos, size draws.XY, clr color.RGBA, ok bool) {
-	return h.tappedPos, h.tappedSize, h.tappedColor, h.hasTap
+func (h *DefaultHistory) TappedCard() (pos, size draws.XY, entry HistoryEntry, ok bool) {
+	return h.tappedPos, h.tappedSize, h.tappedEntry, h.hasTap
 }
 
 func (h *DefaultHistory) Update() {
 	h.hasTap = false
+	if h.state == historyHidden {
+		return
+	}
+	h.alpha.Update()
+	switch h.state {
+	case historyShowing:
+		if h.alpha.IsFinished() {
+			h.state = historyShown
+		}
+	case historyHiding:
+		if h.alpha.IsFinished() {
+			h.state = historyHidden
+		}
+	}
+	if !h.IsInteractive() {
+		h.dragActive = false
+		return
+	}
+
 	x, y := input.MouseCursorPosition()
 	cursor := draws.XY{X: x, Y: y}
 
@@ -202,8 +295,6 @@ func (h *DefaultHistory) Update() {
 		h.dragActive = false
 	}
 
-	h.alpha.Update()
-
 	// Register a tap only if the button was just pressed and the finger
 	// hasn't moved far enough to count as a scroll drag.
 	if !input.IsMouseButtonJustPressed(input.MouseButtonLeft) {
@@ -219,7 +310,7 @@ func (h *DefaultHistory) Update() {
 				Y: c.Position.Y + c.Size.Y/2,
 			}
 			h.tappedSize = c.Size
-			h.tappedColor = card.clr
+			h.tappedEntry = card.entry
 			h.hasTap = true
 			h.cards = append(h.cards[:i], h.cards[i+1:]...)
 			h.recalcPositions()
@@ -229,6 +320,9 @@ func (h *DefaultHistory) Update() {
 }
 
 func (h *DefaultHistory) Draw(dst draws.Image) {
+	if !h.IsVisible() {
+		return
+	}
 	a := float32(h.alpha.Value())
 	if a <= 0 {
 		return

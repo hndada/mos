@@ -99,6 +99,7 @@ func (t *Text) SetFace(opts FaceOptions) {
 	LoadFace(opts)
 	t.FaceOptions = opts
 	t.face = cachedFaces[opts]
+	t.Box.Size = t.Size()
 }
 
 // func (t Text) IsEmpty() bool { return len(t.Text) == 0 }
@@ -111,8 +112,11 @@ func (t Text) Draw(dst Image) {
 	// if t.IsEmpty() {
 	// 	return
 	// }
+	box := t.Box
+	box.src = t
+	box.Size = t.Size()
 	text.Draw(dst.Image, t.Text, t.face, &text.DrawOptions{
-		DrawImageOptions: *t.op(),
+		DrawImageOptions: *box.op(),
 		LayoutOptions: text.LayoutOptions{
 			LineSpacing: t.LineSpacing,
 		},

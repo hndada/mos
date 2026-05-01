@@ -3,6 +3,7 @@ package sysapps
 import (
 	"image/color"
 
+	"github.com/hajimehoshi/ebiten/v2/vector"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/input"
 )
@@ -10,13 +11,14 @@ import (
 type Home interface {
 	Update()
 	Draw(dst draws.Image)
-	// TappedIcon returns the center position, size, and color of the icon tapped this frame.
-	TappedIcon() (pos, size draws.XY, clr color.RGBA, ok bool)
+	// TappedIcon returns the center position, size, color, and app id of the icon tapped this frame.
+	TappedIcon() (pos, size draws.XY, clr color.RGBA, appID string, ok bool)
 }
 
 type homeIcon struct {
 	sprite draws.Sprite
 	color  color.RGBA
+	appID  string
 }
 
 // DefaultHome renders a grid of placeholder app icon slots and detects taps.
@@ -25,6 +27,7 @@ type DefaultHome struct {
 	tappedPos   draws.XY
 	tappedSize  draws.XY
 	tappedColor color.RGBA
+	tappedAppID string
 	hasTap      bool
 }
 
@@ -56,16 +59,38 @@ func NewDefaultHome(screenW, screenH float64) *DefaultHome {
 			cy := screenH*topPad + (float64(r)+0.5)*cellH
 
 			clr := iconColors[(r*cols+c)%len(iconColors)]
-			img := draws.CreateImage(side, side)
-			img.Fill(clr)
+			img := newRoundedIconImage(side, clr)
 
 			sp := draws.NewSprite(img)
 			sp.Locate(cx, cy, draws.CenterMiddle)
-			icons = append(icons, homeIcon{sprite: sp, color: clr})
+			idx := r*cols + c
+			appID := "color"
+			switch idx {
+			case 0:
+				appID = "gallery"
+			case 1:
+				appID = "settings"
+			case 2:
+				appID = "call"
+			}
+			icons = append(icons, homeIcon{sprite: sp, color: clr, appID: appID})
 		}
 	}
 
 	return &DefaultHome{icons: icons}
+}
+
+func newRoundedIconImage(side float64, clr color.RGBA) draws.Image {
+	img := draws.CreateImage(side, side)
+	s := float32(side)
+	r := s * 0.24
+	vector.DrawFilledRect(img.Image, r, 0, s-2*r, s, clr, true)
+	vector.DrawFilledRect(img.Image, 0, r, s, s-2*r, clr, true)
+	vector.DrawFilledCircle(img.Image, r, r, r, clr, true)
+	vector.DrawFilledCircle(img.Image, s-r, r, r, clr, true)
+	vector.DrawFilledCircle(img.Image, r, s-r, r, clr, true)
+	vector.DrawFilledCircle(img.Image, s-r, s-r, r, clr, true)
+	return img
 }
 
 func (h *DefaultHome) Update() {
@@ -80,14 +105,15 @@ func (h *DefaultHome) Update() {
 			h.tappedPos = icon.sprite.Position
 			h.tappedSize = icon.sprite.Size
 			h.tappedColor = icon.color
+			h.tappedAppID = icon.appID
 			h.hasTap = true
 			return
 		}
 	}
 }
 
-func (h *DefaultHome) TappedIcon() (pos, size draws.XY, clr color.RGBA, ok bool) {
-	return h.tappedPos, h.tappedSize, h.tappedColor, h.hasTap
+func (h *DefaultHome) TappedIcon() (pos, size draws.XY, clr color.RGBA, appID string, ok bool) {
+	return h.tappedPos, h.tappedSize, h.tappedColor, h.tappedAppID, h.hasTap
 }
 
 func (h *DefaultHome) Draw(dst draws.Image) {

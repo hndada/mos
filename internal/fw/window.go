@@ -4,8 +4,11 @@ import (
 	"image/color"
 	"time"
 
+	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hndada/mos/internal/draws"
+	"github.com/hndada/mos/internal/input"
 	"github.com/hndada/mos/internal/tween"
+	"github.com/hndada/mos/sysapps"
 )
 
 type Lifecycle int
@@ -22,6 +25,27 @@ const (
 
 func (l Lifecycle) Visible() bool {
 	return l == LifecycleShowing || l == LifecycleShown || l == LifecycleHiding
+}
+
+func (l Lifecycle) String() string {
+	switch l {
+	case LifecycleInitializing:
+		return "initializing"
+	case LifecycleShowing:
+		return "showing"
+	case LifecycleShown:
+		return "shown"
+	case LifecycleHiding:
+		return "hiding"
+	case LifecycleHidden:
+		return "hidden"
+	case LifecycleDestroying:
+		return "destroying"
+	case LifecycleDestroyed:
+		return "destroyed"
+	default:
+		return "unknown"
+	}
 }
 
 // Window owns its canvas. Each visual property is driven by its own Tween so
@@ -51,12 +75,24 @@ func newAnim(begin, end float64, d time.Duration) tween.Tween {
 	return tw
 }
 
-func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, screenW, screenH float64) *Window {
+func staticAnim(value float64) tween.Tween {
+	var tw tween.Tween
+	tw.MaxLoop = 1
+	tw.Add(value, 0, time.Nanosecond, tween.EaseOutExponential)
+	tw.Start()
+	tw.Stop()
+	return tw
+}
+
+func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW, screenH float64) *Window {
 	canvas := draws.CreateImage(screenW, screenH)
 	canvas.Fill(clr)
+	if appID == "" {
+		appID = AppIDColor
+	}
 
 	return &Window{
-		app:       &App{},
+		app:       NewApp(appID, clr, screenW, screenH),
 		canvas:    canvas,
 		lifecycle: LifecycleShowing,
 		clr:       clr,
@@ -69,6 +105,29 @@ func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, screenW, screenH floa
 		sizeW:     newAnim(iconSize.X, screenW, DurationOpening),
 		sizeH:     newAnim(iconSize.Y, screenH, DurationOpening),
 		alpha:     newAnim(1, 1, DurationOpening),
+	}
+}
+
+func NewRestoredWindow(state AppState, screenW, screenH float64) *Window {
+	if state.ID == "" {
+		state.ID = AppIDColor
+	}
+	canvas := draws.CreateImage(screenW, screenH)
+	canvas.Fill(state.Color)
+	return &Window{
+		app:       NewApp(state.ID, state.Color, screenW, screenH),
+		canvas:    canvas,
+		lifecycle: LifecycleShown,
+		clr:       state.Color,
+		iconPos:   draws.XY{X: screenW / 2, Y: screenH / 2},
+		iconSize:  draws.XY{X: screenW, Y: screenH},
+		screenW:   screenW,
+		screenH:   screenH,
+		posX:      staticAnim(screenW / 2),
+		posY:      staticAnim(screenH / 2),
+		sizeW:     staticAnim(screenW),
+		sizeH:     staticAnim(screenH),
+		alpha:     staticAnim(1),
 	}
 }
 
@@ -100,6 +159,12 @@ func (w *Window) Update() {
 		if w.sizeW.IsFinished() {
 			w.lifecycle = LifecycleShown
 		}
+	case LifecycleShown:
+		x, y := input.MouseCursorPosition()
+		w.app.Update(draws.XY{X: x, Y: y})
+		if w.app.ShouldClose() {
+			w.Dismiss()
+		}
 	case LifecycleHiding:
 		if w.sizeW.IsFinished() {
 			w.lifecycle = LifecycleHidden
@@ -107,10 +172,34 @@ func (w *Window) Update() {
 	}
 }
 
-func (w *Window) Draw(dst draws.Image) {
+func (w *Window) UpdateCanvas(screenshots []draws.Image) {
+	w.app.Prepare(screenshots)
+	w.app.Draw(w.canvas, screenshots)
+}
+
+func (w *Window) HistoryEntry(screenshots []draws.Image) sysapps.HistoryEntry {
+	w.UpdateCanvas(screenshots)
+	size := w.canvas.Size()
+	snapshot := draws.CreateImage(size.X, size.Y)
+	snapshot.DrawImage(w.canvas.Image, &ebiten.DrawImageOptions{})
+	return sysapps.HistoryEntry{
+		AppID:    w.app.ID,
+		Color:    w.clr,
+		Snapshot: snapshot,
+	}
+}
+
+func (w *Window) AppState() AppState {
+	return AppState{ID: w.app.ID, Color: w.clr}
+}
+
+func (w *Window) AppID() string { return w.app.ID }
+
+func (w *Window) Draw(dst draws.Image, screenshots []draws.Image) {
 	if !w.lifecycle.Visible() {
 		return
 	}
+	w.UpdateCanvas(screenshots)
 	s := draws.NewSprite(w.canvas)
 	s.Position = draws.XY{X: w.posX.Value(), Y: w.posY.Value()}
 	s.Size = draws.XY{X: w.sizeW.Value(), Y: w.sizeH.Value()}

@@ -20,6 +20,7 @@ func MouseCursorPosition() (float64, float64) {
 // functions
 var IsMouseButtonPressed = ebiten.IsMouseButtonPressed
 var IsMouseButtonJustPressed = inpututil.IsMouseButtonJustPressed
+var IsMouseButtonJustReleased = inpututil.IsMouseButtonJustReleased
 var MouseWheelPosition = ebiten.Wheel
 
 type MouseButton = ebiten.MouseButton
