@@ -7,15 +7,14 @@ import (
 )
 
 // type Keystrokes struct?
-// TODO: KeysPressed -> AreKeysPressed
 type KeyboardState struct {
-	Time        time.Duration // Stands for elapsed time.
-	KeysPressed []bool
+	Time          time.Duration // Stands for elapsed time.
+	AreKeysPressed []bool
 }
 
 func (a KeyboardState) isEqual(b KeyboardState) bool {
-	for k, ap := range a.KeysPressed {
-		bp := b.KeysPressed[k]
+	for k, ap := range a.AreKeysPressed {
+		bp := b.AreKeysPressed[k]
 		if ap != bp {
 			return false
 		}

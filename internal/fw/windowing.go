@@ -12,12 +12,11 @@ const (
 )
 
 type WindowingServer struct {
-	// sysapps
-	home *sysapps.Home
-	hist *sysapps.History
-	kb   *sysapps.Keyboard
+	home sysapps.Home
+	hist sysapps.History
+	kb   sysapps.Keyboard
 }
 
-func (ws *WindowingServer) ShowKeyboard()
-func (ws *WindowingServer) HideKeyboard()
-func (ws *WindowingServer) showSplash()
+func (ws *WindowingServer) ShowKeyboard() { ws.kb.Toggle() }
+func (ws *WindowingServer) HideKeyboard() { ws.kb.Toggle() }
+func (ws *WindowingServer) showSplash()   {}
