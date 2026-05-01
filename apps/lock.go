@@ -1,18 +1,10 @@
-package sysapps
+package apps
 
 import (
 	"time"
 
 	"github.com/hndada/mos/internal/draws"
 )
-
-type Lock interface {
-	Lock()
-	Unlock()
-	IsLocked() bool
-	Update()
-	Draw(dst draws.Image)
-}
 
 type DefaultLock struct {
 	locked   bool

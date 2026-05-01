@@ -1,4 +1,4 @@
-package sysapps
+package apps
 
 import (
 	"image/color"
@@ -9,11 +9,6 @@ import (
 
 // statusBarHeight is shared with history.go so card layout starts below the bar.
 const statusBarHeight = 24.0
-
-type StatusBar interface {
-	Update()
-	Draw(dst draws.Image)
-}
 
 type DefaultStatusBar struct {
 	bg      draws.Sprite

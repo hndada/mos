@@ -1,12 +1,12 @@
-package fw
+package windowing
 
 import (
 	"image/color"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hndada/mos/apps"
 	"github.com/hndada/mos/internal/draws"
-	"github.com/hndada/mos/sysapps"
 )
 
 const (
@@ -19,12 +19,13 @@ type WindowingServer struct {
 	ScreenH float64
 	Logger  func(string)
 
-	wallpaper      sysapps.Wallpaper
-	home           sysapps.Home
-	hist           sysapps.History
-	kb             sysapps.Keyboard
-	statusBar      sysapps.StatusBar
-	lock           sysapps.Lock
+	wallpaper      Wallpaper
+	home           Home
+	hist           History
+	kb             Keyboard
+	statusBar      StatusBar
+	curtain        Curtain
+	lock           Lock
 	showingRecents bool
 
 	windows     []*Window
@@ -39,12 +40,15 @@ func (ws *WindowingServer) log(msg string) {
 	}
 }
 
-func (ws *WindowingServer) SetHome(h sysapps.Home)           { ws.home = h }
-func (ws *WindowingServer) SetWallpaper(w sysapps.Wallpaper) { ws.wallpaper = w }
-func (ws *WindowingServer) SetHistory(h sysapps.History)     { ws.hist = h }
-func (ws *WindowingServer) SetKeyboard(k sysapps.Keyboard)   { ws.kb = k }
-func (ws *WindowingServer) SetStatusBar(s sysapps.StatusBar) { ws.statusBar = s }
-func (ws *WindowingServer) SetLock(l sysapps.Lock)           { ws.lock = l }
+func (ws *WindowingServer) SetHome(h Home)           { ws.home = h }
+func (ws *WindowingServer) SetWallpaper(w Wallpaper) { ws.wallpaper = w }
+func (ws *WindowingServer) SetHistory(h History)     { ws.hist = h }
+func (ws *WindowingServer) SetKeyboard(k Keyboard)   { ws.kb = k }
+func (ws *WindowingServer) SetStatusBar(s StatusBar) { ws.statusBar = s }
+func (ws *WindowingServer) SetCurtain(s Curtain) {
+	ws.curtain = s
+}
+func (ws *WindowingServer) SetLock(l Lock) { ws.lock = l }
 
 func (ws *WindowingServer) ShowKeyboard() {
 	if ws.kb != nil && !ws.kb.IsVisible() {
@@ -71,6 +75,18 @@ func (ws *WindowingServer) ToggleKeyboard() {
 		ws.kb.Show()
 		ws.log("keyboard show")
 	}
+}
+
+func (ws *WindowingServer) ToggleCurtain() {
+	if ws.curtain == nil {
+		return
+	}
+	ws.curtain.Toggle()
+	if ws.curtain.IsVisible() {
+		ws.log("curtain show")
+		return
+	}
+	ws.log("curtain hide")
 }
 
 func (ws *WindowingServer) SetScreenshots(shots []draws.Image) { ws.screenshots = shots }
@@ -201,6 +217,11 @@ func (ws *WindowingServer) GoHome() {
 }
 
 func (ws *WindowingServer) GoBack() {
+	if ws.curtain != nil && ws.curtain.IsVisible() {
+		ws.curtain.Hide()
+		ws.log("back: curtain hide")
+		return
+	}
 	if ws.kb != nil && ws.kb.IsVisible() {
 		ws.kb.Hide()
 		ws.log("back: keyboard hide")
@@ -249,7 +270,7 @@ func (ws *WindowingServer) GoRecents() {
 
 // HistoryEntries returns current history records newest-first, for persisting
 // across screen or device-mode changes.
-func (ws *WindowingServer) HistoryEntries() []sysapps.HistoryEntry {
+func (ws *WindowingServer) HistoryEntries() []apps.HistoryEntry {
 	if ws.hist == nil {
 		return nil
 	}
@@ -280,6 +301,9 @@ func (ws *WindowingServer) Update() {
 	}
 	if ws.statusBar != nil {
 		ws.statusBar.Update()
+	}
+	if ws.curtain != nil {
+		ws.curtain.Update()
 	}
 	if ws.lock != nil {
 		ws.lock.Update()
@@ -317,7 +341,7 @@ func (ws *WindowingServer) Update() {
 	ws.windows = live
 }
 
-// Draw composites back-to-front: wallpaper → home|recents → windows → keyboard → status bar → lock.
+// Draw composites back-to-front: wallpaper ??home|recents ??windows ??keyboard ??status bar ??lock.
 func (ws *WindowingServer) Draw(dst draws.Image) {
 	if ws.wallpaper != nil {
 		ws.wallpaper.Draw(dst)
@@ -336,6 +360,9 @@ func (ws *WindowingServer) Draw(dst draws.Image) {
 	}
 	if ws.statusBar != nil {
 		ws.statusBar.Draw(dst)
+	}
+	if ws.curtain != nil && ws.curtain.IsVisible() {
+		ws.curtain.Draw(dst)
 	}
 	if ws.lock != nil {
 		ws.lock.Draw(dst)

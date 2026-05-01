@@ -12,7 +12,7 @@ import (
 
 // Layout constants (all in content-space pixels).
 const (
-	settingsStatusH = 24.0 // must match sysapps.statusBarHeight
+	settingsStatusH = 24.0 // must match statusBarHeight
 	settingsTitleH  = 48.0
 	settingsRowH    = 52.0
 	settingsHdrH    = 36.0
@@ -220,18 +220,18 @@ func (s *Settings) Update(cursor draws.XY) {
 }
 
 func (s *Settings) Draw(dst draws.Image) {
-	// ── title bar ─────────────────────────────────────────────────────────────
+	// Title bar.
 	s.titleBg.Draw(dst)
 	s.title.Draw(dst)
 
-	// ── content rows onto canvas ──────────────────────────────────────────────
+	// Content rows onto canvas.
 	s.canvas.Fill(settingsBg)
 
 	for _, r := range s.rows {
 		s.drawRow(r)
 	}
 
-	// ── blit visible portion to screen ───────────────────────────────────────
+	// Blit visible portion to screen.
 	clipY := int(s.scrollOff)
 	clipH := int(min(s.viewportH(), s.contentH-s.scrollOff))
 	if clipH <= 0 {

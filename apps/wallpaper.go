@@ -1,14 +1,10 @@
-package sysapps
+package apps
 
 import (
 	"image/color"
 
 	"github.com/hndada/mos/internal/draws"
 )
-
-type Wallpaper interface {
-	Draw(dst draws.Image)
-}
 
 type DefaultWallpaper struct {
 	Sprite draws.Sprite

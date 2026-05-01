@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hndada/mos/apps"
 	"github.com/hndada/mos/internal/draws"
-	"github.com/hndada/mos/internal/fw"
 	"github.com/hndada/mos/internal/input"
-	"github.com/hndada/mos/sysapps"
+	"github.com/hndada/mos/internal/windowing"
 	"github.com/hndada/mos/ui"
 )
 
@@ -18,7 +18,7 @@ const (
 	simH = 900
 )
 
-// ── display mode ─────────────────────────────────────────────────────────────
+// Display mode.
 
 type displayMode int
 
@@ -103,7 +103,7 @@ func groups() [displayModeCount]displayGroup {
 
 func placeDisplayGroup(w, h float64) (float64, float64) {
 	centerX := func(width float64) float64 { return (simW - width) / 2 }
-	centerY := func(height float64) float64 { return (simH - controlPanelH - height) / 2 }
+	centerY := func(height float64) float64 { return (simH - height) / 2 }
 	overlapsLog := func(x, y float64) bool {
 		return x < logX+logW+logGap &&
 			x+w > logX &&
@@ -122,14 +122,14 @@ func placeDisplayGroup(w, h float64) (float64, float64) {
 	}
 
 	belowY := logY + logH + logGap
-	if belowY+h <= simH-controlPanelH-12 {
+	if belowY+h <= simH-12 {
 		return centerX(w), belowY
 	}
 
 	return x, y
 }
 
-// ── pre-built per-group visuals ───────────────────────────────────────────────
+// Pre-built per-group visuals.
 
 const borderPx = 8.0
 
@@ -175,61 +175,48 @@ func historyAspectSpec(mode displayMode, group displayGroup) screenSpec {
 	}
 }
 
-// ── simulator ────────────────────────────────────────────────────────────────
+// Simulator.
 
 // Simulator drives the OS loop and emulates physical hardware buttons:
 //
-//	F1 — power (toggle display on/off)
-//	F2 — cycle device mode: bar, flip, fold
-//	F3 — cycle active display within the current device mode
+//	F1: power (toggle display on/off)
+//	F2: cycle device mode: bar, flip, fold
+//	F3: cycle active display within the current device mode
 type simulator struct {
-	mode               displayMode
-	activeDisplay      int
-	groups             [displayModeCount]displayGroup
-	simGroup           simGroup
-	canvas             draws.Image // render target for the active display
-	ws                 fw.WindowingServer
-	display            fw.Display
-	help               draws.Text
-	log                simLog
-	historyEntries     []sysapps.HistoryEntry // persisted across screen/mode changes
-	screenshots        []draws.Image          // persisted in memory across screen/mode changes
-	captureNext        bool
-	controlPanelBg     draws.Sprite
-	backButton         ui.TriggerButton
-	homeButton         ui.TriggerButton
-	recentsButton      ui.TriggerButton
-	keyboardButton     ui.TriggerButton
-	callButton         ui.TriggerButton
-	logButton          ui.TriggerButton
-	flushLogButton     ui.TriggerButton
-	backButtonBg       draws.Sprite
-	homeButtonBg       draws.Sprite
-	recentsButtonBg    draws.Sprite
-	keyboardButtonBg   draws.Sprite
-	callButtonBg       draws.Sprite
-	logButtonBg        draws.Sprite
-	flushLogButtonBg   draws.Sprite
-	backButtonText     draws.Text
-	homeButtonText     draws.Text
-	recentsButtonText  draws.Text
-	keyboardButtonText draws.Text
-	callButtonText     draws.Text
-	logButtonText      draws.Text
-	flushLogButtonText draws.Text
-	navGesture         ui.GestureDetector
+	mode              displayMode
+	activeDisplay     int
+	groups            [displayModeCount]displayGroup
+	simGroup          simGroup
+	canvas            draws.Image // render target for the active display
+	ws                windowing.WindowingServer
+	display           windowing.Display
+	help              draws.Text
+	log               simLog
+	historyEntries    []apps.HistoryEntry // persisted across screen/mode changes
+	screenshots       []draws.Image       // persisted in memory across screen/mode changes
+	captureNext       bool
+	controlPanelBg    draws.Sprite
+	backButton        ui.TriggerButton
+	homeButton        ui.TriggerButton
+	recentsButton     ui.TriggerButton
+	backButtonBg      draws.Sprite
+	homeButtonBg      draws.Sprite
+	recentsButtonBg   draws.Sprite
+	backButtonText    draws.Text
+	homeButtonText    draws.Text
+	recentsButtonText draws.Text
+	navGesture        ui.GestureDetector
 }
 
-const helpString = "P: Power   1/2/3: Bar-Flip-Fold   S: Active screen   L: Log   B/Esc: Back   V: Incoming call   C: Screenshot   H/R/K"
+const helpString = "P: Power   1/2/3: Bar-Flip-Fold   S: Active screen   B/Esc: Back   N: Curtain   K: Keys   V: Ring   L/F: Log"
 
 const (
-	controlPanelH = 64.0
-	controlPanelY = simH - controlPanelH
+	controlPanelH = 38.0
 	logMaxLines   = 31
 	logX          = 12.0
 	logY          = 12.0
 	logW          = 560.0
-	logH          = controlPanelY - logY - 12
+	logH          = simH - logY - 52
 	logGap        = 28.0
 )
 
@@ -311,10 +298,9 @@ func newSimulator() *simulator {
 	opts.Size = 13
 	t := draws.NewText(helpString)
 	t.SetFace(opts)
-	t.Locate(simW/2, controlPanelY-8, draws.CenterBottom)
+	t.Locate(simW/2, simH-8, draws.CenterBottom)
 	s.help = t
 	s.log = newSimLog()
-	s.initControlPanel()
 	s.logf("simulator boot")
 
 	s.applyMode()
@@ -327,13 +313,6 @@ func (s *simulator) logf(format string, args ...any) {
 
 func (s *simulator) logLine(msg string) {
 	s.log.Add(msg)
-}
-
-func (s *simulator) initControlPanel() {
-	img := draws.CreateImage(simW, controlPanelH)
-	img.Fill(color.RGBA{24, 24, 26, 235})
-	s.controlPanelBg = draws.NewSprite(img)
-	s.controlPanelBg.Locate(0, controlPanelY, draws.LeftTop)
 }
 
 func (s *simulator) applyMode() {
@@ -351,14 +330,14 @@ func (s *simulator) applyMode() {
 	active := group[s.activeDisplay]
 
 	s.canvas = draws.CreateImage(active.w, active.h)
-	s.ws = fw.WindowingServer{ScreenW: active.w, ScreenH: active.h}
+	s.ws = windowing.WindowingServer{ScreenW: active.w, ScreenH: active.h}
 	s.ws.SetLogger(s.logLine)
 	s.ws.SetScreenshots(s.screenshots)
-	s.ws.SetWallpaper(sysapps.NewDefaultWallpaper(active.w, active.h))
-	s.ws.SetHome(sysapps.NewDefaultHome(active.w, active.h))
+	s.ws.SetWallpaper(apps.NewDefaultWallpaper(active.w, active.h))
+	s.ws.SetHome(apps.NewDefaultHome(active.w, active.h))
 
 	historyAspect := historyAspectSpec(s.mode, group)
-	hist := sysapps.NewDefaultHistoryWithCardAspect(active.w, active.h, historyAspect.w, historyAspect.h)
+	hist := apps.NewDefaultHistoryWithCardAspect(active.w, active.h, historyAspect.w, historyAspect.h)
 	// Restore saved app history newest-last so AddCard (which prepends)
 	// rebuilds the slice with index 0 = newest.
 	for i := len(s.historyEntries) - 1; i >= 0; i-- {
@@ -369,8 +348,9 @@ func (s *simulator) applyMode() {
 		s.ws.RestoreActiveApp(activeApp)
 	}
 
-	s.ws.SetStatusBar(sysapps.NewDefaultStatusBar(active.w, active.h))
-	s.ws.SetKeyboard(sysapps.NewDefaultKeyboard(active.w, active.h))
+	s.ws.SetStatusBar(apps.NewDefaultStatusBar(active.w, active.h))
+	s.ws.SetCurtain(apps.NewDefaultCurtain(active.w, active.h))
+	s.ws.SetKeyboard(apps.NewDefaultKeyboard(active.w, active.h))
 	s.display.W = active.w
 	s.display.H = active.h
 	s.display.SetPowered(true)
@@ -382,47 +362,52 @@ func (s *simulator) applyMode() {
 
 func (s *simulator) layoutTriggers(active screenSpec) {
 	const (
-		buttonW = 72.0
-		buttonH = 34.0
-		gap     = 8.0
+		buttonH = 26.0
+		gap     = 4.0
+		margin  = 5.0
 	)
-	totalW := buttonW*7 + gap*6
-	x := (simW - totalW) / 2
-	y := controlPanelY + (controlPanelH-buttonH)/2
+	buttonW := min(62, (active.w-margin*2-gap*2)/3)
+	totalW := buttonW*3 + gap*2
+	panelW := totalW + margin*2
+	panelH := controlPanelH
+	x := active.x + (active.w-totalW)/2
+	if x < active.x+margin {
+		x = active.x + margin
+	}
+	if x+totalW > active.x+active.w-margin {
+		x = active.x + active.w - margin - totalW
+	}
+	y := active.y + active.h - panelH - margin + (panelH-buttonH)/2
+	if x < 0 {
+		x = 0
+	}
+
+	if s.controlPanelBg.Source.IsEmpty() || s.controlPanelBg.Size.X != panelW || s.controlPanelBg.Size.Y != panelH {
+		img := draws.CreateImage(panelW, panelH)
+		img.Fill(color.RGBA{0, 0, 0, 150})
+		s.controlPanelBg = draws.NewSprite(img)
+	}
+	s.controlPanelBg.Locate(x-margin, y-(panelH-buttonH)/2, draws.LeftTop)
+
 	step := buttonW + gap
-	s.backButton.SetRect(x, y, buttonW, buttonH)
+	s.recentsButton.SetRect(x, y, buttonW, buttonH)
 	s.homeButton.SetRect(x+step, y, buttonW, buttonH)
-	s.recentsButton.SetRect(x+step*2, y, buttonW, buttonH)
-	s.keyboardButton.SetRect(x+step*3, y, buttonW, buttonH)
-	s.callButton.SetRect(x+step*4, y, buttonW, buttonH)
-	s.logButton.SetRect(x+step*5, y, buttonW, buttonH)
-	s.flushLogButton.SetRect(x+step*6, y, buttonW, buttonH)
+	s.backButton.SetRect(x+step*2, y, buttonW, buttonH)
 	s.layoutTriggerVisuals()
 	s.navGesture = ui.NewGestureDetector(0, active.h-80, active.w, 80)
 	s.navGesture.MinSwipePx = ui.HomeSwipeMinPx
 }
 
 func (s *simulator) layoutTriggerVisuals() {
-	s.configureTriggerVisuals(&s.backButtonBg, &s.backButtonText, s.backButton.Box, "Back")
+	s.configureTriggerVisuals(&s.recentsButtonBg, &s.recentsButtonText, s.recentsButton.Box, "[ ]")
 	s.configureTriggerVisuals(&s.homeButtonBg, &s.homeButtonText, s.homeButton.Box, "Home")
-	s.configureTriggerVisuals(&s.recentsButtonBg, &s.recentsButtonText, s.recentsButton.Box, "Recent")
-	s.configureTriggerVisuals(&s.keyboardButtonBg, &s.keyboardButtonText, s.keyboardButton.Box, "Keys")
-	s.configureTriggerVisuals(&s.callButtonBg, &s.callButtonText, s.callButton.Box, "Ring")
-	s.configureTriggerVisuals(&s.logButtonBg, &s.logButtonText, s.logButton.Box, logButtonLabel(s.log.visible))
-	s.configureTriggerVisuals(&s.flushLogButtonBg, &s.flushLogButtonText, s.flushLogButton.Box, "Flush")
-}
-
-func logButtonLabel(visible bool) string {
-	if visible {
-		return "Hide Log"
-	}
-	return "Log"
+	s.configureTriggerVisuals(&s.backButtonBg, &s.backButtonText, s.backButton.Box, "< Back")
 }
 
 func (s *simulator) configureTriggerVisuals(bg *draws.Sprite, txt *draws.Text, box ui.Box, label string) {
 	if bg.Source.IsEmpty() || bg.Size != box.Size {
 		img := draws.CreateImage(box.W(), box.H())
-		img.Fill(color.RGBA{0, 0, 0, 120})
+		img.Fill(color.RGBA{255, 255, 255, 48})
 		*bg = draws.NewSprite(img)
 	}
 	bg.Position = box.Position
@@ -431,7 +416,7 @@ func (s *simulator) configureTriggerVisuals(bg *draws.Sprite, txt *draws.Text, b
 
 	if txt.Text == "" {
 		opts := draws.NewFaceOptions()
-		opts.Size = 11
+		opts.Size = 10
 		*txt = draws.NewText("")
 		txt.SetFace(opts)
 	}
@@ -462,19 +447,11 @@ func (s *simulator) cycleActiveDisplay() {
 
 func (s *simulator) toggleLog() {
 	s.log.Toggle()
-	s.layoutTriggerVisuals()
 }
 
 func (s *simulator) Update() error {
 	rawX, rawY := ebiten.CursorPosition()
 	rawCursor := draws.XY{X: float64(rawX), Y: float64(rawY)}
-
-	if s.logButton.Update(rawCursor) {
-		s.toggleLog()
-	}
-	if s.flushLogButton.Update(rawCursor) {
-		s.log.Clear()
-	}
 
 	if input.IsKeyJustPressed(input.KeyP) {
 		s.display.SetPowered(!s.display.Powered())
@@ -495,6 +472,9 @@ func (s *simulator) Update() error {
 	if input.IsKeyJustPressed(input.KeyL) {
 		s.toggleLog()
 	}
+	if input.IsKeyJustPressed(input.KeyF) {
+		s.log.Clear()
+	}
 	if input.IsKeyJustPressed(input.KeyC) || input.IsKeyJustPressed(input.KeyPrintScreen) {
 		s.captureNext = true
 		s.logf("screenshot requested")
@@ -514,6 +494,9 @@ func (s *simulator) Update() error {
 	if input.IsKeyJustPressed(input.KeyV) {
 		s.ws.ReceiveCall()
 	}
+	if input.IsKeyJustPressed(input.KeyN) {
+		s.ws.ToggleCurtain()
+	}
 	if s.display.Powered() {
 		active := s.groups[s.mode][s.activeDisplay]
 		if s.backButton.Update(rawCursor) {
@@ -524,12 +507,6 @@ func (s *simulator) Update() error {
 		}
 		if s.recentsButton.Update(rawCursor) {
 			s.ws.GoRecents()
-		}
-		if s.keyboardButton.Update(rawCursor) {
-			s.ws.ToggleKeyboard()
-		}
-		if s.callButton.Update(rawCursor) {
-			s.ws.ReceiveCall()
 		}
 
 		input.SetCursorOffset(active.x, active.y)
@@ -580,17 +557,9 @@ func (s *simulator) drawTriggers(dst draws.Image) {
 	s.backButtonBg.Draw(dst)
 	s.homeButtonBg.Draw(dst)
 	s.recentsButtonBg.Draw(dst)
-	s.keyboardButtonBg.Draw(dst)
-	s.callButtonBg.Draw(dst)
-	s.logButtonBg.Draw(dst)
-	s.flushLogButtonBg.Draw(dst)
 	s.backButtonText.Draw(dst)
 	s.homeButtonText.Draw(dst)
 	s.recentsButtonText.Draw(dst)
-	s.keyboardButtonText.Draw(dst)
-	s.callButtonText.Draw(dst)
-	s.logButtonText.Draw(dst)
-	s.flushLogButtonText.Draw(dst)
 }
 
 func (s *simulator) Layout(_, _ int) (int, int) { return simW, simH }

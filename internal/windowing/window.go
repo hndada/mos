@@ -1,14 +1,14 @@
-package fw
+package windowing
 
 import (
 	"image/color"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hndada/mos/apps"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/input"
 	"github.com/hndada/mos/internal/tween"
-	"github.com/hndada/mos/sysapps"
 )
 
 type Lifecycle int
@@ -177,12 +177,12 @@ func (w *Window) UpdateCanvas(screenshots []draws.Image) {
 	w.app.Draw(w.canvas, screenshots)
 }
 
-func (w *Window) HistoryEntry(screenshots []draws.Image) sysapps.HistoryEntry {
+func (w *Window) HistoryEntry(screenshots []draws.Image) apps.HistoryEntry {
 	w.UpdateCanvas(screenshots)
 	size := w.canvas.Size()
 	snapshot := draws.CreateImage(size.X, size.Y)
 	snapshot.DrawImage(w.canvas.Image, &ebiten.DrawImageOptions{})
-	return sysapps.HistoryEntry{
+	return apps.HistoryEntry{
 		AppID:    w.app.ID,
 		Color:    w.clr,
 		Snapshot: snapshot,

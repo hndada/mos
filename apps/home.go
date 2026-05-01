@@ -1,4 +1,4 @@
-package sysapps
+package apps
 
 import (
 	"image/color"
@@ -7,13 +7,6 @@ import (
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/input"
 )
-
-type Home interface {
-	Update()
-	Draw(dst draws.Image)
-	// TappedIcon returns the center position, size, color, and app id of the icon tapped this frame.
-	TappedIcon() (pos, size draws.XY, clr color.RGBA, appID string, ok bool)
-}
 
 type homeIcon struct {
 	sprite draws.Sprite
@@ -72,6 +65,8 @@ func NewDefaultHome(screenW, screenH float64) *DefaultHome {
 				appID = "settings"
 			case 2:
 				appID = "call"
+			case 3:
+				appID = "scene-test"
 			}
 			icons = append(icons, homeIcon{sprite: sp, color: clr, appID: appID})
 		}

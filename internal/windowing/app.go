@@ -1,4 +1,4 @@
-package fw
+package windowing
 
 import (
 	"fmt"
@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	AppIDColor    = "color"
-	AppIDGallery  = "gallery"
-	AppIDSettings = "settings"
-	AppIDCall     = "call"
+	AppIDColor     = "color"
+	AppIDGallery   = "gallery"
+	AppIDSettings  = "settings"
+	AppIDCall      = "call"
+	AppIDSceneTest = "scene-test"
 )
 
 // AppContent is implemented by each app to provide per-frame update and draw.
@@ -50,6 +51,8 @@ func NewApp(id string, clr color.RGBA, screenW, screenH float64) *App {
 		a.content = apps.NewSettings(screenW, screenH)
 	case AppIDCall:
 		a.content = apps.NewCall(screenW, screenH)
+	case AppIDSceneTest:
+		a.content = apps.NewSceneTest(screenW, screenH)
 	}
 	if a.content == nil && a.gallery == nil {
 		a.initPlaceholderText(screenW, screenH)
@@ -79,6 +82,8 @@ func appTitle(id string) string {
 		return "Settings"
 	case AppIDCall:
 		return "Call"
+	case AppIDSceneTest:
+		return "Scene Test"
 	default:
 		return "App"
 	}

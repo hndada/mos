@@ -1,4 +1,4 @@
-package fw
+package windowing
 
 type DisplayKind int
 

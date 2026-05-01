@@ -1,4 +1,4 @@
-package sysapps
+package apps
 
 import (
 	"image/color"
@@ -15,14 +15,6 @@ var keyboardRowsQwerty = [][]string{
 	{"a", "s", "d", "f", "g", "h", "j", "k", "l"},
 	{"z", "x", "c", "v", "b", "n", "m"},
 	{"space"},
-}
-
-type Keyboard interface {
-	Show()
-	Hide()
-	IsVisible() bool
-	Update()
-	Draw(dst draws.Image)
 }
 
 // DefaultKeyboard renders a QWERTY layout that slides up from the bottom of the screen.

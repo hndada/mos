@@ -1,4 +1,4 @@
-package sysapps
+package apps
 
 import (
 	"image/color"
@@ -16,28 +16,10 @@ const MaxHistory = 50
 const (
 	hCardMaxWFrac = 0.84 // max card width as fraction of screenW
 	hCardMaxHFrac = 0.65 // max card height as fraction of screenH
-	hStepFrac     = 0.74 // step between cards; < hCardWFrac → cards overlap + adjacent cards peek
+	hStepFrac     = 0.74 // step between cards; < hCardWFrac ??cards overlap + adjacent cards peek
 	cardBorderW   = 3.0
 	durationShow  = 350 * time.Millisecond
 )
-
-type History interface {
-	AddCard(entry HistoryEntry)
-	RemoveCard()
-	Show()
-	Hide()
-	IsVisible() bool
-	IsInteractive() bool
-	TappedCard() (pos, size draws.XY, entry HistoryEntry, ok bool)
-	// CardRect returns the center and size of the card that would appear at
-	// position 0 (newest) when the carousel is fully reset. Used to animate
-	// windows shrinking toward the card on dismiss.
-	CardRect() (center, size draws.XY)
-	// Entries returns app history newest-first, for persisting across screen changes.
-	Entries() []HistoryEntry
-	Update()
-	Draw(dst draws.Image)
-}
 
 type historyState int
 
