@@ -2,6 +2,7 @@ package fw
 
 import (
 	"image/color"
+	"time"
 
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/tween"
@@ -29,6 +30,11 @@ type Window struct {
 	app       *App
 	canvas    draws.Image
 	lifecycle Lifecycle
+	clr       color.RGBA
+	iconPos   draws.XY
+	iconSize  draws.XY
+	screenW   float64
+	screenH   float64
 
 	posX  tween.Tween
 	posY  tween.Tween
@@ -37,28 +43,50 @@ type Window struct {
 	alpha tween.Tween
 }
 
-func newAnim(begin, end float64) tween.Tween {
+func newAnim(begin, end float64, d time.Duration) tween.Tween {
 	var tw tween.Tween
 	tw.MaxLoop = 1
-	tw.Add(begin, end-begin, DurationSplash, tween.EaseOutExponential)
+	tw.Add(begin, end-begin, d, tween.EaseOutExponential)
 	tw.Start()
 	return tw
 }
 
-func NewWindow(iconPos, iconSize draws.XY, screenW, screenH float64) *Window {
+func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, screenW, screenH float64) *Window {
 	canvas := draws.CreateImage(screenW, screenH)
-	canvas.Fill(color.RGBA{30, 30, 30, 255})
+	canvas.Fill(clr)
 
 	return &Window{
 		app:       &App{},
 		canvas:    canvas,
 		lifecycle: LifecycleShowing,
-		posX:      newAnim(iconPos.X, screenW/2),
-		posY:      newAnim(iconPos.Y, screenH/2),
-		sizeW:     newAnim(iconSize.X, screenW),
-		sizeH:     newAnim(iconSize.Y, screenH),
-		alpha:     newAnim(1, 1),
+		clr:       clr,
+		iconPos:   iconPos,
+		iconSize:  iconSize,
+		screenW:   screenW,
+		screenH:   screenH,
+		posX:      newAnim(iconPos.X, screenW/2, DurationOpening),
+		posY:      newAnim(iconPos.Y, screenH/2, DurationOpening),
+		sizeW:     newAnim(iconSize.X, screenW, DurationOpening),
+		sizeH:     newAnim(iconSize.Y, screenH, DurationOpening),
+		alpha:     newAnim(1, 1, DurationOpening),
 	}
+}
+
+func (w *Window) Dismiss() {
+	w.DismissTo(w.iconPos, w.iconSize)
+}
+
+// DismissTo animates the window shrinking to an arbitrary target center and size.
+func (w *Window) DismissTo(targetCenter, targetSize draws.XY) {
+	if w.lifecycle != LifecycleShown && w.lifecycle != LifecycleShowing {
+		return
+	}
+	w.lifecycle = LifecycleHiding
+	w.posX = newAnim(w.posX.Value(), targetCenter.X, DurationClosing)
+	w.posY = newAnim(w.posY.Value(), targetCenter.Y, DurationClosing)
+	w.sizeW = newAnim(w.sizeW.Value(), targetSize.X, DurationClosing)
+	w.sizeH = newAnim(w.sizeH.Value(), targetSize.Y, DurationClosing)
+	w.alpha = newAnim(1, 0, DurationClosing)
 }
 
 func (w *Window) Update() {
@@ -67,8 +95,15 @@ func (w *Window) Update() {
 	w.sizeW.Update()
 	w.sizeH.Update()
 	w.alpha.Update()
-	if w.lifecycle == LifecycleShowing && w.sizeW.IsFinished() {
-		w.lifecycle = LifecycleShown
+	switch w.lifecycle {
+	case LifecycleShowing:
+		if w.sizeW.IsFinished() {
+			w.lifecycle = LifecycleShown
+		}
+	case LifecycleHiding:
+		if w.sizeW.IsFinished() {
+			w.lifecycle = LifecycleHidden
+		}
 	}
 }
 

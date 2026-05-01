@@ -148,17 +148,32 @@ type simulator struct {
 	canvas        draws.Image // render target for the active display
 	ws            fw.WindowingServer
 	display       fw.Display
+	help          draws.Text
+	histColors    []color.RGBA // persisted across screen/mode changes
 }
+
+const helpString = "P: Power   1/2/3: Bar·Flip·Fold   S: Active screen   H: Home   R: History   K: Keyboard"
 
 func newSimulator() *simulator {
 	s := &simulator{}
 	s.groups = groups()
 	s.activeDisplay = primaryIndex(s.groups[s.mode])
+
+	opts := draws.NewFaceOptions()
+	opts.Size = 13
+	t := draws.NewText(helpString)
+	t.SetFace(opts)
+	t.Locate(simW/2, simH-10, draws.CenterBottom)
+	s.help = t
+
 	s.applyMode()
 	return s
 }
 
 func (s *simulator) applyMode() {
+	// Persist history card colors before tearing down the old windowing server.
+	s.histColors = s.ws.HistoryColors()
+
 	group := s.groups[s.mode]
 	if s.activeDisplay >= len(group) {
 		s.activeDisplay = primaryIndex(group)
@@ -169,20 +184,34 @@ func (s *simulator) applyMode() {
 	s.ws = fw.WindowingServer{ScreenW: active.w, ScreenH: active.h}
 	s.ws.SetWallpaper(sysapps.NewDefaultWallpaper(active.w, active.h))
 	s.ws.SetHome(sysapps.NewDefaultHome(active.w, active.h))
+
+	hist := sysapps.NewDefaultHistory(active.w, active.h)
+	// Restore saved card history newest-last so AddCard (which prepends) rebuilds
+	// the slice with index 0 = newest.
+	for i := len(s.histColors) - 1; i >= 0; i-- {
+		hist.AddCard(s.histColors[i])
+	}
+	s.ws.SetHistory(hist)
+
 	s.ws.SetStatusBar(sysapps.NewDefaultStatusBar(active.w, active.h))
+	s.ws.SetKeyboard(sysapps.NewDefaultKeyboard(active.w, active.h))
 	s.display.W = active.w
 	s.display.H = active.h
+	s.display.SetPowered(true)
 	s.simGroup = buildGroup(group)
 	ebiten.SetWindowTitle("MOS Simulator - " + s.mode.String())
 }
 
-func (s *simulator) changeDeviceMode() {
-	s.mode = (s.mode + 1) % displayModeCount
+func (s *simulator) setMode(m displayMode) {
+	if s.mode == m {
+		return
+	}
+	s.mode = m
 	s.activeDisplay = primaryIndex(s.groups[s.mode])
 	s.applyMode()
 }
 
-func (s *simulator) changeActiveDisplay() {
+func (s *simulator) cycleActiveDisplay() {
 	group := s.groups[s.mode]
 	if len(group) <= 1 {
 		return
@@ -192,26 +221,45 @@ func (s *simulator) changeActiveDisplay() {
 }
 
 func (s *simulator) Update() error {
-	if input.IsKeyJustPressed(input.KeyF1) {
+	if input.IsKeyJustPressed(input.KeyP) {
 		s.display.SetPowered(!s.display.Powered())
 	}
-	if input.IsKeyJustPressed(input.KeyF2) {
-		s.changeDeviceMode()
+	if input.IsKeyJustPressed(input.KeyDigit1) {
+		s.setMode(displayModeBar)
 	}
-	if input.IsKeyJustPressed(input.KeyF3) {
-		s.changeActiveDisplay()
+	if input.IsKeyJustPressed(input.KeyDigit2) {
+		s.setMode(displayModeFlip)
 	}
-	active := s.groups[s.mode][s.activeDisplay]
-	input.SetCursorOffset(active.x, active.y)
-	s.ws.Update()
+	if input.IsKeyJustPressed(input.KeyDigit3) {
+		s.setMode(displayModeFold)
+	}
+	if input.IsKeyJustPressed(input.KeyS) {
+		s.cycleActiveDisplay()
+	}
+	if input.IsKeyJustPressed(input.KeyH) {
+		s.ws.GoHome()
+	}
+	if input.IsKeyJustPressed(input.KeyR) {
+		s.ws.GoRecents()
+	}
+	if input.IsKeyJustPressed(input.KeyK) {
+		s.ws.ToggleKeyboard()
+	}
+	if s.display.Powered() {
+		active := s.groups[s.mode][s.activeDisplay]
+		input.SetCursorOffset(active.x, active.y)
+		s.ws.Update()
+	}
 	return nil
 }
 
 func (s *simulator) Draw(screen *ebiten.Image) {
 	screen.Fill(color.RGBA{38, 38, 40, 255}) // device body
 
-	s.canvas.Clear()
-	s.ws.Draw(s.canvas)
+	if s.display.Powered() {
+		s.canvas.Clear()
+		s.ws.Draw(s.canvas)
+	}
 
 	for i, sl := range s.simGroup.slots {
 		brdOp := &ebiten.DrawImageOptions{}
@@ -220,12 +268,14 @@ func (s *simulator) Draw(screen *ebiten.Image) {
 
 		op := &ebiten.DrawImageOptions{}
 		op.GeoM.Translate(sl.x, sl.y)
-		if i == s.activeDisplay {
+		if i == s.activeDisplay && s.display.Powered() {
 			screen.DrawImage(s.canvas.Image, op)
 		} else {
 			screen.DrawImage(sl.bg.Image, op)
 		}
 	}
+
+	s.help.Draw(draws.Image{Image: screen})
 }
 
 func (s *simulator) Layout(_, _ int) (int, int) { return simW, simH }

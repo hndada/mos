@@ -10,16 +10,22 @@ import (
 type Home interface {
 	Update()
 	Draw(dst draws.Image)
-	// TappedIcon returns the center position and size of the icon tapped this frame.
-	TappedIcon() (pos, size draws.XY, ok bool)
+	// TappedIcon returns the center position, size, and color of the icon tapped this frame.
+	TappedIcon() (pos, size draws.XY, clr color.RGBA, ok bool)
+}
+
+type homeIcon struct {
+	sprite draws.Sprite
+	color  color.RGBA
 }
 
 // DefaultHome renders a grid of placeholder app icon slots and detects taps.
 type DefaultHome struct {
-	icons      []draws.Sprite
-	tappedPos  draws.XY
-	tappedSize draws.XY
-	hasTap     bool
+	icons       []homeIcon
+	tappedPos   draws.XY
+	tappedSize  draws.XY
+	tappedColor color.RGBA
+	hasTap      bool
 }
 
 var iconColors = []color.RGBA{
@@ -43,7 +49,7 @@ func NewDefaultHome(screenW, screenH float64) *DefaultHome {
 	cellH := (screenH * (1 - topPad)) / rows
 	side := min(cellW, cellH) * iconScale
 
-	icons := make([]draws.Sprite, 0, cols*rows)
+	icons := make([]homeIcon, 0, cols*rows)
 	for r := range rows {
 		for c := range cols {
 			cx := (float64(c) + 0.5) * cellW
@@ -55,7 +61,7 @@ func NewDefaultHome(screenW, screenH float64) *DefaultHome {
 
 			sp := draws.NewSprite(img)
 			sp.Locate(cx, cy, draws.CenterMiddle)
-			icons = append(icons, sp)
+			icons = append(icons, homeIcon{sprite: sp, color: clr})
 		}
 	}
 
@@ -70,21 +76,22 @@ func (h *DefaultHome) Update() {
 	x, y := input.MouseCursorPosition()
 	cursor := draws.XY{X: x, Y: y}
 	for _, icon := range h.icons {
-		if icon.In(cursor) {
-			h.tappedPos = icon.Position
-			h.tappedSize = icon.Size
+		if icon.sprite.In(cursor) {
+			h.tappedPos = icon.sprite.Position
+			h.tappedSize = icon.sprite.Size
+			h.tappedColor = icon.color
 			h.hasTap = true
 			return
 		}
 	}
 }
 
-func (h *DefaultHome) TappedIcon() (pos, size draws.XY, ok bool) {
-	return h.tappedPos, h.tappedSize, h.hasTap
+func (h *DefaultHome) TappedIcon() (pos, size draws.XY, clr color.RGBA, ok bool) {
+	return h.tappedPos, h.tappedSize, h.tappedColor, h.hasTap
 }
 
 func (h *DefaultHome) Draw(dst draws.Image) {
 	for _, icon := range h.icons {
-		icon.Draw(dst)
+		icon.sprite.Draw(dst)
 	}
 }
