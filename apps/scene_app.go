@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2/vector"
+	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/input"
 	"github.com/hndada/mos/internal/tween"
@@ -95,12 +96,19 @@ func sceneAnim(from, to float64) tween.Tween {
 	return tw
 }
 
-func (s *SceneTest) Update(cursor draws.XY) {
+func (s *SceneTest) Update(frame mosapp.Frame) {
 	s.anim.Update()
 	if s.anim.IsFinished() {
 		s.index = s.to
 	}
-	if !input.IsMouseButtonJustPressed(input.MouseButtonLeft) {
+	pressed := false
+	for _, ev := range frame.Events {
+		if ev.Kind == input.EventDown {
+			pressed = true
+			break
+		}
+	}
+	if !pressed {
 		return
 	}
 	if !s.anim.IsFinished() {

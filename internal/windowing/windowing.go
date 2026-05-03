@@ -6,8 +6,10 @@ import (
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hndada/mos/apps"
+	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/event"
+	"github.com/hndada/mos/internal/input"
 )
 
 const (
@@ -37,6 +39,10 @@ type WindowingServer struct {
 	showingRecents bool
 	windows        []*Window
 	screenshots    []draws.Image
+
+	// inputProducer turns Ebiten polling state into discrete events that
+	// are routed to the active window's goroutine each frame.
+	inputProducer input.Producer
 }
 
 func (ws *WindowingServer) SetLogger(logger func(string)) { ws.Logger = logger }
@@ -88,6 +94,26 @@ func (ws *WindowingServer) ToggleKeyboard() {
 	}
 }
 
+// Lock / Unlock delegate to the bound Lock implementation, if any.
+// IsLocked reports the current lock state (false when no Lock is bound).
+func (ws *WindowingServer) Lock() {
+	if ws.lock != nil && !ws.lock.IsLocked() {
+		ws.lock.Lock()
+		ws.log("lock")
+	}
+}
+
+func (ws *WindowingServer) Unlock() {
+	if ws.lock != nil && ws.lock.IsLocked() {
+		ws.lock.Unlock()
+		ws.log("unlock")
+	}
+}
+
+func (ws *WindowingServer) IsLocked() bool {
+	return ws.lock != nil && ws.lock.IsLocked()
+}
+
 func (ws *WindowingServer) ToggleCurtain() {
 	if ws.curtain == nil {
 		return
@@ -114,9 +140,22 @@ func (ws *WindowingServer) AddScreenshot(src draws.Image) {
 	ws.log("screenshot captured")
 }
 
+// SafeArea computes the per-edge offsets reserved by system UI for the
+// current frame. Visible status bar reserves the top; visible keyboard
+// reserves the bottom.
+func (ws *WindowingServer) SafeArea() mosapp.SafeArea {
+	var sa mosapp.SafeArea
+	if ws.statusBar != nil {
+		sa.Top = ws.statusBar.Height()
+	}
+	if ws.kb != nil {
+		sa.Bottom = ws.kb.Height()
+	}
+	return sa
+}
+
 func (ws *WindowingServer) launchApp(iconPos, iconSize draws.XY, clr color.RGBA, appID string) {
-	ctx := newWindowContext(ws)
-	w := NewWindow(iconPos, iconSize, clr, appID, ws.ScreenW, ws.ScreenH, ctx)
+	w := NewWindow(iconPos, iconSize, clr, appID, ws.ScreenW, ws.ScreenH, ws)
 	ws.windows = append(ws.windows, w)
 	ws.log("launch " + appID)
 	ws.log("window " + w.AppID() + ": " + LifecycleInitializing.String() + " -> " + w.lifecycle.String())
@@ -144,8 +183,7 @@ func (ws *WindowingServer) RestoreActiveApp(state AppState) {
 	if state.ID == "" {
 		return
 	}
-	ctx := newWindowContext(ws)
-	w := NewRestoredWindow(state, ws.ScreenW, ws.ScreenH, ctx)
+	w := NewRestoredWindow(state, ws.ScreenW, ws.ScreenH, ws)
 	ws.windows = append(ws.windows, w)
 	ws.log("restore " + state.ID)
 	ws.log("window " + w.AppID() + ": " + LifecycleInitializing.String() + " -> " + w.lifecycle.String())
@@ -303,45 +341,106 @@ func (ws *WindowingServer) HistoryEntries() []apps.HistoryEntry {
 	return ws.hist.Entries()
 }
 
+// Shutdown destroys every live window and joins its goroutine. Call this
+// before discarding a WindowingServer instance (e.g. on display-mode
+// change), otherwise the per-window goroutines are leaked.
+func (ws *WindowingServer) Shutdown() {
+	for _, w := range ws.windows {
+		if w.lifecycle != LifecycleDestroyed {
+			w.Destroy()
+		}
+	}
+	ws.windows = nil
+}
+
+// Update is the per-frame entry point. Order of operations:
+//
+//  1. Produce input events from this frame's Ebiten state.
+//  2. Update each window's published SafeArea.
+//  3. Run main-thread system UI (home, recents, keyboard, status bar, curtain, lock).
+//  4. For each window: animate; tick its goroutine if Shown; drain commands.
+//  5. Purge fully hidden windows (firing OnDestroy on their goroutine).
 func (ws *WindowingServer) Update() {
-	if ws.home != nil && !ws.showingRecents {
-		ws.home.Update()
-		if pos, size, clr, appID, ok := ws.home.TappedIcon(); ok {
-			if !ws.hasVisibleWindow() {
-				ws.launchApp(pos, size, clr, appID)
+	events := ws.inputProducer.Poll()
+	cx, cy := input.MouseCursorPosition()
+	cursor := draws.XY{X: cx, Y: cy}
+	locked := ws.IsLocked()
+
+	sa := ws.SafeArea()
+	for _, w := range ws.windows {
+		w.ctx.setSafeArea(sa)
+	}
+
+	// While locked, the lock owns the entire input stream. Skip input-
+	// processing system UI updates so taps don't bleed through to the
+	// home / recents / curtain layers behind the overlay. The status bar
+	// still updates so the wall clock keeps ticking.
+	if !locked {
+		if ws.home != nil && !ws.showingRecents {
+			ws.home.Update()
+			if pos, size, clr, appID, ok := ws.home.TappedIcon(); ok {
+				if !ws.hasVisibleWindow() {
+					ws.launchApp(pos, size, clr, appID)
+				}
 			}
 		}
-	}
-	if ws.hist != nil && ws.hist.IsVisible() {
-		ws.hist.Update()
-	}
-	if ws.hist != nil && ws.showingRecents && ws.hist.IsInteractive() {
-		if pos, size, entry, ok := ws.hist.TappedCard(); ok {
-			ws.launchApp(pos, size, entry.Color, entry.AppID)
-			ws.hist.Hide()
-			ws.showingRecents = false
+		if ws.hist != nil && ws.hist.IsVisible() {
+			ws.hist.Update()
 		}
-	}
-	if ws.kb != nil {
-		ws.kb.Update()
+		if ws.hist != nil && ws.showingRecents && ws.hist.IsInteractive() {
+			if pos, size, entry, ok := ws.hist.TappedCard(); ok {
+				ws.launchApp(pos, size, entry.Color, entry.AppID)
+				ws.hist.Hide()
+				ws.showingRecents = false
+			}
+		}
+		if ws.kb != nil {
+			ws.kb.Update()
+		}
+		if ws.curtain != nil {
+			ws.curtain.Update()
+		}
 	}
 	if ws.statusBar != nil {
 		ws.statusBar.Update()
 	}
-	if ws.curtain != nil {
-		ws.curtain.Update()
-	}
 	if ws.lock != nil {
-		ws.lock.Update()
+		var lockFrame mosapp.Frame
+		if locked {
+			lockFrame = mosapp.Frame{Cursor: cursor, Events: events}
+		}
+		ws.lock.Update(lockFrame)
 	}
 
-	for _, w := range ws.windows {
+	// Snapshot the slice: launchApp inside the loop would otherwise grow it.
+	current := make([]*Window, len(ws.windows))
+	copy(current, ws.windows)
+	active, _ := ws.activeWindow()
+
+	for _, w := range current {
 		before := w.lifecycle
 		w.Update()
 		ws.logLifecycleChange(w, before)
 
-		// Handle app-initiated launches (ctx.Launch).
-		if id := w.app.ctx.drainLaunch(); id != "" {
+		if w.lifecycle == LifecycleShown {
+			// Only the active window receives input events; others tick with
+			// just the cursor position so animations driven by Update still
+			// see a coherent value. While locked, no app receives events.
+			frame := mosapp.Frame{Cursor: cursor}
+			if w == active && !locked {
+				frame.Events = events
+			}
+			w.UpdateApp(frame)
+
+			if w.proc.shouldClose {
+				before := w.lifecycle
+				w.Dismiss()
+				ws.logLifecycleChange(w, before)
+				w.proc.shouldClose = false
+			}
+		}
+
+		if id := w.proc.drainLaunch(); id != "" {
 			center := draws.XY{X: ws.ScreenW / 2, Y: ws.ScreenH / 2}
 			size := draws.XY{X: ws.ScreenW * 0.5, Y: ws.ScreenH * 0.5}
 			ws.launchApp(center, size, w.app.Color, id)
@@ -361,12 +460,12 @@ func (ws *WindowingServer) Update() {
 		}
 	}
 
-	// Purge fully hidden windows: fire OnDestroy, then remove from the list.
+	// Purge fully hidden windows: fire OnDestroy on their goroutine, then remove.
 	live := ws.windows[:0]
 	for _, w := range ws.windows {
 		if w.lifecycle == LifecycleHidden {
 			before := w.lifecycle
-			w.Destroy() // fires OnDestroy, sets LifecycleDestroyed
+			w.Destroy() // sendTick(tickDestroy) → goroutine returns → marked Destroyed
 			ws.logLifecycleChange(w, before)
 			continue
 		}
@@ -379,6 +478,10 @@ func (ws *WindowingServer) Update() {
 
 // Draw composites back-to-front:
 // wallpaper → home | recents → windows → keyboard → status bar → curtain → lock.
+//
+// Each Window's content.Draw is invoked here on the main goroutine. Lock-step
+// from Update() guarantees every app goroutine has acked its tick before
+// Draw runs, so reading app state requires no mutex.
 func (ws *WindowingServer) Draw(dst draws.Image) {
 	if ws.wallpaper != nil {
 		ws.wallpaper.Draw(dst)

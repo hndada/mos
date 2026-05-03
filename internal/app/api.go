@@ -6,13 +6,25 @@ package app
 import (
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/event"
+	"github.com/hndada/mos/internal/input"
 )
+
+// Frame is the per-tick input bundle handed to Content.Update. Cursor is
+// the latest pointer position (canvas-relative); Events is the ordered
+// list of input events that occurred since the last tick.
+//
+// Apps that only need a cursor position can read frame.Cursor and ignore
+// Events; widgets in the ui package consume the full Frame.
+type Frame struct {
+	Cursor draws.XY
+	Events []input.Event
+}
 
 // Content is the interface every MOS app must implement.
 // Update is called each frame while the window is fully open (Shown);
 // Draw is called every frame the window is visible, including open/close animations.
 type Content interface {
-	Update(cursor draws.XY)
+	Update(frame Frame)
 	Draw(dst draws.Image)
 }
 
@@ -31,17 +43,43 @@ type Lifecycle interface {
 	OnDestroy()
 }
 
-// Notification is a message posted to the OS notification center (curtain panel).
-type Notification struct {
+// Notice is a message posted to the OS notification center (curtain panel).
+type Notice struct {
 	Title string
 	Body  string
 }
 
+// SafeArea describes the screen edges reserved by system UI: status bar,
+// soft keyboard, navigation chrome. Apps should keep critical UI inside the
+// rectangle that ScreenSize() shrinks to after each edge is subtracted.
+//
+// Equivalent terminology elsewhere:
+//   - Android:        WindowInsets / safeDrawingPadding
+//   - iOS / SwiftUI:  safeAreaInsets
+//   - CSS:            env(safe-area-inset-*)
+//   - Flutter:        MediaQuery.padding / viewInsets
+//
+// We use the Go-idiomatic name SafeArea (concrete noun, no platform jargon)
+// rather than "Insets".
+type SafeArea struct {
+	Top, Right, Bottom, Left float64
+}
+
 // Context is the OS handle every app receives at creation.
 // It provides access to system services and lets the app drive OS actions.
+//
+// Implementation note: state queries (ScreenSize, SafeArea, Bus, Screenshots)
+// read from goroutine-safe sources. Command methods (Finish, Launch,
+// ShowKeyboard, HideKeyboard, PostNotice) are forwarded to the windowing
+// server over a channel and dispatched on the main goroutine.
 type Context interface {
 	// ScreenSize returns the pixel dimensions of the window's display canvas.
 	ScreenSize() draws.XY
+
+	// SafeArea returns the per-edge offsets reserved by system UI for the
+	// current frame. The value can change between frames (e.g. when the
+	// soft keyboard is shown).
+	SafeArea() SafeArea
 
 	// Finish asks the windowing server to close this app's window.
 	Finish()
@@ -57,8 +95,8 @@ type Context interface {
 	ShowKeyboard()
 	HideKeyboard()
 
-	// PostNotification sends a notification to the curtain / notification centre.
-	PostNotification(n Notification)
+	// PostNotice sends a notice to the curtain / notification centre.
+	PostNotice(n Notice)
 
 	// Screenshots returns the list of in-memory screenshots captured by the user,
 	// newest last. Primarily used by the Gallery app.

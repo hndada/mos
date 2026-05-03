@@ -1,7 +1,7 @@
 package apps
 
 // HelloApp demonstrates the MOS app API:
-//   - Context: screen size, Launch, ShowKeyboard, PostNotification
+//   - Context: screen size, Launch, ShowKeyboard, PostNotice
 //   - Lifecycle: OnCreate / OnResume / OnPause / OnDestroy
 //   - Event bus: subscribing to system events (dark-mode, navigation)
 //
@@ -115,17 +115,17 @@ func (h *HelloApp) OnDestroy() {
 
 // --- Content ---
 
-func (h *HelloApp) Update(cursor draws.XY) {
-	if h.btnKB.Update(cursor) {
+func (h *HelloApp) Update(frame mosapp.Frame) {
+	if h.btnKB.Update(frame) {
 		h.ctx.ShowKeyboard()
 		h.hint.Text = "keyboard toggled"
 	}
-	if h.btnNoti.Update(cursor) {
-		h.ctx.PostNotification(mosapp.Notification{
+	if h.btnNoti.Update(frame) {
+		h.ctx.PostNotice(mosapp.Notice{
 			Title: "HelloApp",
 			Body:  "Button tapped at " + time.Now().Format("15:04:05"),
 		})
-		h.hint.Text = "notification posted"
+		h.hint.Text = "notice posted"
 	}
 }
 
@@ -138,8 +138,8 @@ func (h *HelloApp) Draw(dst draws.Image) {
 	h.header.Draw(dst)
 	h.body.Draw(dst)
 	h.hint.Draw(dst)
-	h.btnKB.Draw(dst, draws.XY{})
-	h.btnNoti.Draw(dst, draws.XY{})
+	h.btnKB.Draw(dst)
+	h.btnNoti.Draw(dst)
 }
 
 // itoa is a tiny helper to avoid importing strconv just for one call.

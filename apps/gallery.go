@@ -51,7 +51,7 @@ func newGalleryApp(ctx mosapp.Context) mosapp.Content {
 	}
 }
 
-func (g *GalleryApp) Update(_ draws.XY) {}
+func (g *GalleryApp) Update(_ mosapp.Frame) {}
 
 func (g *GalleryApp) Draw(dst draws.Image) {
 	shots := g.ctx.Screenshots()

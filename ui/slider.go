@@ -4,6 +4,7 @@ import (
 	"image/color"
 	"math"
 
+	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/input"
 )
@@ -51,19 +52,28 @@ func NewSlider(x, y, w, val float64) Slider {
 
 func (s *Slider) thumbCX() float64 { return s.x + s.Value*s.w }
 
-// Update handles drag interaction. cursor must be in the same space as the slider.
-func (s *Slider) Update(cursor draws.XY) {
-	if input.IsMouseButtonJustPressed(input.MouseButtonLeft) {
-		tx := s.thumbCX()
-		if math.Abs(cursor.X-tx) <= SliderThumbR*2 && math.Abs(cursor.Y-s.y) <= SliderThumbR*2 {
-			s.dragging = true
+func (s *Slider) thumbHit(p draws.XY) bool {
+	tx := s.thumbCX()
+	return math.Abs(p.X-tx) <= SliderThumbR*2 && math.Abs(p.Y-s.y) <= SliderThumbR*2
+}
+
+// Update handles drag interaction. Down inside the thumb starts a drag;
+// subsequent Moves update Value; Up ends the drag.
+func (s *Slider) Update(frame mosapp.Frame) {
+	for _, ev := range frame.Events {
+		switch ev.Kind {
+		case input.EventDown:
+			if s.thumbHit(ev.Pos) {
+				s.dragging = true
+				s.Value = clamp01((ev.Pos.X - s.x) / s.w)
+			}
+		case input.EventMove:
+			if s.dragging {
+				s.Value = clamp01((ev.Pos.X - s.x) / s.w)
+			}
+		case input.EventUp:
+			s.dragging = false
 		}
-	}
-	if !input.IsMouseButtonPressed(input.MouseButtonLeft) {
-		s.dragging = false
-	}
-	if s.dragging {
-		s.Value = clamp01((cursor.X - s.x) / s.w)
 	}
 }
 

@@ -50,6 +50,8 @@ func NewDefaultStatusBar(screenW, screenH float64) *DefaultStatusBar {
 	}
 }
 
+func (sb *DefaultStatusBar) Height() float64 { return statusBarHeight }
+
 func (sb *DefaultStatusBar) Update() {
 	sb.clock.Text = time.Now().Format("15:04")
 }

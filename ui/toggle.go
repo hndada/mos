@@ -4,6 +4,7 @@ import (
 	"image/color"
 	"time"
 
+	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/tween"
 )
@@ -22,8 +23,8 @@ type Toggle struct {
 	trackOff draws.Sprite
 	trackOn  draws.Sprite
 	knob     draws.Sprite
-	knobX    tween.Tween
-	onAlpha  tween.Tween
+	knobX    tween.Transition
+	onAlpha  tween.Transition
 	x, y     float64
 }
 
@@ -51,27 +52,10 @@ func NewToggle(x, y float64, val bool) Toggle {
 		x:        x,
 		y:        y,
 	}
-	t.knobX = newToggleAnim(t.targetKnobX())
-	t.onAlpha = newToggleAnim(t.targetOnAlpha())
+	t.knobX.Snap(t.targetKnobX())
+	t.onAlpha.Snap(t.targetOnAlpha())
 	t.placeKnob()
 	return t
-}
-
-func newToggleAnim(value float64) tween.Tween {
-	var tw tween.Tween
-	tw.MaxLoop = 1
-	tw.Add(value, 0, time.Nanosecond, tween.EaseOutExponential)
-	tw.Start()
-	tw.Stop()
-	return tw
-}
-
-func startToggleAnim(from, to float64) tween.Tween {
-	var tw tween.Tween
-	tw.MaxLoop = 1
-	tw.Add(from, to-from, toggleAnimDuration, tween.EaseOutExponential)
-	tw.Start()
-	return tw
 }
 
 func (t *Toggle) targetKnobX() float64 {
@@ -94,14 +78,12 @@ func (t *Toggle) placeKnob() {
 }
 
 // Update flips Value on tap and returns true when the value changed.
-func (t *Toggle) Update(cursor draws.XY) bool {
-	t.knobX.Update()
-	t.onAlpha.Update()
+func (t *Toggle) Update(frame mosapp.Frame) bool {
 	t.placeKnob()
-	if t.gesture.Update(cursor).Kind == GestureTap {
+	if t.gesture.Update(frame).Kind == GestureTap {
 		t.Value = !t.Value
-		t.knobX = startToggleAnim(t.knobX.Value(), t.targetKnobX())
-		t.onAlpha = startToggleAnim(t.onAlpha.Value(), t.targetOnAlpha())
+		t.knobX.To(t.targetKnobX(), toggleAnimDuration, tween.EaseOutExponential)
+		t.onAlpha.To(t.targetOnAlpha(), toggleAnimDuration, tween.EaseOutExponential)
 		return true
 	}
 	return false

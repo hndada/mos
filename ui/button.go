@@ -3,8 +3,8 @@ package ui
 import (
 	"image/color"
 
+	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
-	"github.com/hndada/mos/internal/input"
 )
 
 // Button is a tappable rectangle with a text label.
@@ -35,17 +35,15 @@ func NewButton(label string, fontSize, x, y, w, h float64, bg color.RGBA) Button
 }
 
 // Update returns true on the frame the button is released as a tap.
-func (b *Button) Update(cursor draws.XY) bool {
-	return b.gesture.Update(cursor).Kind == GestureTap
+func (b *Button) Update(frame mosapp.Frame) bool {
+	return b.gesture.Update(frame).Kind == GestureTap
 }
 
-func (b *Button) isHeld(cursor draws.XY) bool {
-	return input.IsMouseButtonPressed(input.MouseButtonLeft) && b.gesture.Area.In(cursor)
-}
-
-func (b *Button) Draw(dst draws.Image, cursor draws.XY) {
+// Draw paints the button. The "held" highlight is driven by the gesture
+// detector's tracked state, so no cursor parameter is needed.
+func (b *Button) Draw(dst draws.Image) {
 	sp := b.bg
-	if b.isHeld(cursor) {
+	if b.gesture.IsHeld() {
 		sp.ColorScale.ScaleAlpha(0.55)
 	}
 	sp.Draw(dst)

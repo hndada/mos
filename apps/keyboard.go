@@ -112,6 +112,16 @@ func (k *DefaultKeyboard) Hide() {
 
 func (k *DefaultKeyboard) IsVisible() bool { return k.shown }
 
+// Height reports the keyboard's reserved bottom area. We return the *target*
+// height (not the mid-slide visible amount) so apps don't reflow each frame
+// while the keyboard is animating.
+func (k *DefaultKeyboard) Height() float64 {
+	if k.shown {
+		return k.kbH
+	}
+	return 0
+}
+
 func (k *DefaultKeyboard) Update() {
 	k.slideY.Update()
 }
