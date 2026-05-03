@@ -2,14 +2,11 @@ package windowing
 
 import (
 	"image/color"
-	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hndada/mos/apps"
-	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/input"
-	"github.com/hndada/mos/internal/tween"
 )
 
 // Lifecycle tracks the animation / activation phase of a Window.
@@ -50,10 +47,18 @@ func (l Lifecycle) String() string {
 	}
 }
 
-// Window owns its off-screen canvas. Every visual property is driven by its
-// own Tween so any combination of properties can animate simultaneously.
+// Window owns its off-screen canvas. All visual properties (position, size,
+// alpha) are driven by a single WindowAnim, whose retargetable transitions
+// allow Dismiss to interrupt an in-flight open without snapping.
+//
+// The app's content is hosted on a per-window goroutine via windowProc;
+// this Window struct only exposes main-thread operations (animation,
+// composition, lifecycle dispatch). See window_proc.go for the boundary
+// protocol and its real-OS analogue.
 type Window struct {
 	app       *App
+	ctx       *windowContext
+	proc      *windowProc
 	canvas    draws.Image
 	lifecycle Lifecycle
 	clr       color.RGBA
@@ -61,40 +66,24 @@ type Window struct {
 	iconSize  draws.XY
 	screenW   float64
 	screenH   float64
-
-	posX  tween.Tween
-	posY  tween.Tween
-	sizeW tween.Tween
-	sizeH tween.Tween
-	alpha tween.Tween
+	anim      WindowAnim
 }
 
-func newAnim(begin, end float64, d time.Duration) tween.Tween {
-	var tw tween.Tween
-	tw.MaxLoop = 1
-	tw.Add(begin, end-begin, d, tween.EaseOutExponential)
-	tw.Start()
-	return tw
-}
-
-func staticAnim(value float64) tween.Tween {
-	var tw tween.Tween
-	tw.MaxLoop = 1
-	tw.Add(value, 0, time.Nanosecond, tween.EaseOutExponential)
-	tw.Start()
-	tw.Stop()
-	return tw
-}
-
-// NewWindow creates a window that animates open from iconPos/iconSize.
-func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW, screenH float64, ctx *windowContext) *Window {
+// NewWindow creates a window, starts its goroutine, and waits for OnCreate
+// to ack before returning. The window animates open from iconPos / iconSize.
+func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW, screenH float64, ws *WindowingServer) *Window {
 	canvas := draws.CreateImage(screenW, screenH)
 	canvas.Fill(clr)
 	if appID == "" {
 		appID = AppIDColor
 	}
-	return &Window{
-		app:       NewApp(appID, clr, ctx),
+	proc := newWindowProc()
+	ctx := newWindowContext(ws, proc)
+	app := NewApp(appID, clr, ctx)
+	w := &Window{
+		app:       app,
+		ctx:       ctx,
+		proc:      proc,
 		canvas:    canvas,
 		lifecycle: LifecycleShowing,
 		clr:       clr,
@@ -102,24 +91,30 @@ func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW
 		iconSize:  iconSize,
 		screenW:   screenW,
 		screenH:   screenH,
-		posX:      newAnim(iconPos.X, screenW/2, DurationOpening),
-		posY:      newAnim(iconPos.Y, screenH/2, DurationOpening),
-		sizeW:     newAnim(iconSize.X, screenW, DurationOpening),
-		sizeH:     newAnim(iconSize.Y, screenH, DurationOpening),
-		alpha:     newAnim(1, 1, DurationOpening),
 	}
+	w.anim.OpenFrom(iconPos, iconSize, draws.XY{X: screenW, Y: screenH}, DurationOpening)
+
+	// Start the goroutine; OnCreate runs there and acks before we return.
+	go proc.run(app.content, ctx)
+	<-proc.ackCh
+	return w
 }
 
 // NewRestoredWindow creates a window that is immediately fully open (no open animation).
 // Used to re-display the active app after a display-mode change.
-func NewRestoredWindow(state AppState, screenW, screenH float64, ctx *windowContext) *Window {
+func NewRestoredWindow(state AppState, screenW, screenH float64, ws *WindowingServer) *Window {
 	if state.ID == "" {
 		state.ID = AppIDColor
 	}
 	canvas := draws.CreateImage(screenW, screenH)
 	canvas.Fill(state.Color)
+	proc := newWindowProc()
+	ctx := newWindowContext(ws, proc)
+	app := NewApp(state.ID, state.Color, ctx)
 	w := &Window{
-		app:       NewApp(state.ID, state.Color, ctx),
+		app:       app,
+		ctx:       ctx,
+		proc:      proc,
 		canvas:    canvas,
 		lifecycle: LifecycleShown,
 		clr:       state.Color,
@@ -127,16 +122,14 @@ func NewRestoredWindow(state AppState, screenW, screenH float64, ctx *windowCont
 		iconSize:  draws.XY{X: screenW, Y: screenH},
 		screenW:   screenW,
 		screenH:   screenH,
-		posX:      staticAnim(screenW / 2),
-		posY:      staticAnim(screenH / 2),
-		sizeW:     staticAnim(screenW),
-		sizeH:     staticAnim(screenH),
-		alpha:     staticAnim(1),
 	}
-	// The app is immediately visible, so fire OnResume right away.
-	if lc, ok := w.app.content.(mosapp.Lifecycle); ok {
-		lc.OnResume()
-	}
+	w.anim.SnapOpen(draws.XY{X: screenW, Y: screenH})
+
+	// Start goroutine; OnCreate acks. The app is already fully visible, so
+	// fire OnResume right after.
+	go proc.run(app.content, ctx)
+	<-proc.ackCh
+	proc.sendTick(tickMsg{kind: tickResume})
 	return w
 }
 
@@ -146,55 +139,50 @@ func (w *Window) Dismiss() {
 }
 
 // DismissTo animates the window closed, shrinking to an arbitrary target.
+// Safe to call mid-open: the underlying Transition rebases from the current
+// value, so the reversal is continuous. Fires OnPause on the goroutine.
 func (w *Window) DismissTo(targetCenter, targetSize draws.XY) {
 	if w.lifecycle != LifecycleShown && w.lifecycle != LifecycleShowing {
 		return
 	}
 	w.lifecycle = LifecycleHiding
-	w.posX = newAnim(w.posX.Value(), targetCenter.X, DurationClosing)
-	w.posY = newAnim(w.posY.Value(), targetCenter.Y, DurationClosing)
-	w.sizeW = newAnim(w.sizeW.Value(), targetSize.X, DurationClosing)
-	w.sizeH = newAnim(w.sizeH.Value(), targetSize.Y, DurationClosing)
-	w.alpha = newAnim(1, 0, DurationClosing)
-	if lc, ok := w.app.content.(mosapp.Lifecycle); ok {
-		lc.OnPause()
-	}
+	w.anim.CloseTo(targetCenter, targetSize, DurationClosing)
+	w.proc.sendTick(tickMsg{kind: tickPause})
 }
 
-// Destroy fires OnDestroy on the app content and marks the window as destroyed.
+// Destroy fires OnDestroy on the goroutine, joins it, and marks the window
+// as destroyed. After this the windowProc is finished; cmdCh is left open
+// (any late writes from app-spawned goroutines are silently buffered or
+// dropped).
 func (w *Window) Destroy() {
-	if lc, ok := w.app.content.(mosapp.Lifecycle); ok {
-		lc.OnDestroy()
-	}
+	w.proc.sendTick(tickMsg{kind: tickDestroy})
+	close(w.proc.tickCh)
 	w.lifecycle = LifecycleDestroyed
 }
 
+// Update advances animation state and, when an open animation completes,
+// fires OnResume on the goroutine. The actual app Update is driven by the
+// windowing server via UpdateApp — not here.
 func (w *Window) Update() {
-	w.posX.Update()
-	w.posY.Update()
-	w.sizeW.Update()
-	w.sizeH.Update()
-	w.alpha.Update()
-
 	switch w.lifecycle {
 	case LifecycleShowing:
-		if w.sizeW.IsFinished() {
+		if w.anim.Done() {
 			w.lifecycle = LifecycleShown
-			if lc, ok := w.app.content.(mosapp.Lifecycle); ok {
-				lc.OnResume()
-			}
-		}
-	case LifecycleShown:
-		x, y := input.MouseCursorPosition()
-		w.app.Update(draws.XY{X: x, Y: y})
-		if w.app.ShouldClose() {
-			w.Dismiss()
+			w.proc.sendTick(tickMsg{kind: tickResume})
 		}
 	case LifecycleHiding:
-		if w.sizeW.IsFinished() {
+		if w.anim.Done() {
 			w.lifecycle = LifecycleHidden
 		}
 	}
+}
+
+// UpdateApp routes input to the goroutine and waits for the tick to ack.
+// Call only when lifecycle == LifecycleShown. After the ack the server
+// reads w.proc.shouldClose / drainLaunch() to handle command results.
+func (w *Window) UpdateApp(cursor draws.XY, events []input.Event) {
+	w.proc.sendTick(tickMsg{kind: tickUpdate, cursor: cursor, events: events})
+	w.proc.drain(w.ctx.ws)
 }
 
 func (w *Window) updateCanvas() {
@@ -223,9 +211,9 @@ func (w *Window) Draw(dst draws.Image) {
 	}
 	w.updateCanvas()
 	s := draws.NewSprite(w.canvas)
-	s.Position = draws.XY{X: w.posX.Value(), Y: w.posY.Value()}
-	s.Size = draws.XY{X: w.sizeW.Value(), Y: w.sizeH.Value()}
+	s.Position = w.anim.Pos()
+	s.Size = w.anim.Size()
 	s.Aligns = draws.CenterMiddle
-	s.ColorScale.ScaleAlpha(float32(w.alpha.Value()))
+	s.ColorScale.ScaleAlpha(float32(w.anim.Alpha()))
 	s.Draw(dst)
 }

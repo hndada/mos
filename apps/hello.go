@@ -1,7 +1,7 @@
 package apps
 
 // HelloApp demonstrates the MOS app API:
-//   - Context: screen size, Launch, ShowKeyboard, PostNotification
+//   - Context: screen size, Launch, ShowKeyboard, PostNotice
 //   - Lifecycle: OnCreate / OnResume / OnPause / OnDestroy
 //   - Event bus: subscribing to system events (dark-mode, navigation)
 //
@@ -121,11 +121,11 @@ func (h *HelloApp) Update(cursor draws.XY) {
 		h.hint.Text = "keyboard toggled"
 	}
 	if h.btnNoti.Update(cursor) {
-		h.ctx.PostNotification(mosapp.Notification{
+		h.ctx.PostNotice(mosapp.Notice{
 			Title: "HelloApp",
 			Body:  "Button tapped at " + time.Now().Format("15:04:05"),
 		})
-		h.hint.Text = "notification posted"
+		h.hint.Text = "notice posted"
 	}
 }
 

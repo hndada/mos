@@ -35,11 +35,17 @@ type Keyboard interface {
 	Show()
 	Hide()
 	IsVisible() bool
+	// Height returns the pixels reserved at the bottom of the screen while
+	// the keyboard is shown (0 when hidden). Reported as the final target
+	// height even mid-slide so app layout doesn't reflow each frame.
+	Height() float64
 	Update()
 	Draw(dst draws.Image)
 }
 
 type StatusBar interface {
+	// Height returns the pixels reserved at the top of the screen.
+	Height() float64
 	Update()
 	Draw(dst draws.Image)
 }

@@ -323,6 +323,8 @@ func (s *simulator) applyMode() {
 	if shots := s.ws.Screenshots(); shots != nil {
 		s.screenshots = shots
 	}
+	// Tear down the old server's per-window goroutines so they don't leak.
+	s.ws.Shutdown()
 
 	group := s.groups[s.mode]
 	if s.activeDisplay >= len(group) {

@@ -1,53 +1,72 @@
 package windowing
 
 import (
+	"sync"
+
 	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/event"
+	"github.com/hndada/mos/internal/input"
 )
 
 // windowContext implements app.Context on behalf of a single window.
 // It is created by the windowing server when an app is launched and remains
 // alive for the full lifetime of that window.
+//
+// All command methods (Finish, Launch, ShowKeyboard, HideKeyboard, PostNotice)
+// run on the app goroutine and forward the request to the server via
+// proc.cmdCh. State queries (ScreenSize, SafeArea, Bus, Screenshots) read
+// from goroutine-safe sources.
 type windowContext struct {
 	ws      *WindowingServer
+	proc    *windowProc
 	screenW float64
 	screenH float64
 
-	// Flags written by the app and drained by the windowing server each frame.
-	shouldClose   bool
-	pendingLaunch string
+	safeAreaMu sync.RWMutex
+	safeArea   mosapp.SafeArea
 }
 
-func newWindowContext(ws *WindowingServer) *windowContext {
-	return &windowContext{ws: ws, screenW: ws.ScreenW, screenH: ws.ScreenH}
+func newWindowContext(ws *WindowingServer, proc *windowProc) *windowContext {
+	return &windowContext{
+		ws:      ws,
+		proc:    proc,
+		screenW: ws.ScreenW,
+		screenH: ws.ScreenH,
+	}
+}
+
+// setSafeArea is called by the windowing server each frame on the main
+// goroutine; the app goroutine reads it via SafeArea() under RLock.
+func (c *windowContext) setSafeArea(sa mosapp.SafeArea) {
+	c.safeAreaMu.Lock()
+	c.safeArea = sa
+	c.safeAreaMu.Unlock()
 }
 
 func (c *windowContext) ScreenSize() draws.XY {
 	return draws.XY{X: c.screenW, Y: c.screenH}
 }
 
-func (c *windowContext) Finish() { c.shouldClose = true }
+func (c *windowContext) SafeArea() mosapp.SafeArea {
+	c.safeAreaMu.RLock()
+	defer c.safeAreaMu.RUnlock()
+	return c.safeArea
+}
 
-func (c *windowContext) Launch(appID string) { c.pendingLaunch = appID }
+func (c *windowContext) PollInput() (input.Event, bool) {
+	return c.proc.pollInput()
+}
+
+func (c *windowContext) Finish()             { c.proc.cmdCh <- CmdFinish{} }
+func (c *windowContext) Launch(appID string) { c.proc.cmdCh <- CmdLaunch{AppID: appID} }
+func (c *windowContext) ShowKeyboard()       { c.proc.cmdCh <- CmdShowKeyboard{} }
+func (c *windowContext) HideKeyboard()       { c.proc.cmdCh <- CmdHideKeyboard{} }
+
+func (c *windowContext) PostNotice(n mosapp.Notice) {
+	c.proc.cmdCh <- CmdPostNotice{Notice: n}
+}
 
 func (c *windowContext) Bus() *event.Bus { return c.ws.Bus }
 
-func (c *windowContext) ShowKeyboard() { c.ws.ShowKeyboard() }
-func (c *windowContext) HideKeyboard() { c.ws.HideKeyboard() }
-
-func (c *windowContext) PostNotification(n mosapp.Notification) {
-	c.ws.log("notification: " + n.Title + " — " + n.Body)
-	// TODO: enqueue into the curtain notification list
-}
-
-func (c *windowContext) Screenshots() []draws.Image {
-	return c.ws.screenshots
-}
-
-// drainLaunch returns and clears any pending app-ID launch the app requested.
-func (c *windowContext) drainLaunch() string {
-	id := c.pendingLaunch
-	c.pendingLaunch = ""
-	return id
-}
+func (c *windowContext) Screenshots() []draws.Image { return c.ws.Screenshots() }
