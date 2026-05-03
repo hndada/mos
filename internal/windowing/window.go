@@ -5,8 +5,8 @@ import (
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hndada/mos/apps"
+	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
-	"github.com/hndada/mos/internal/input"
 )
 
 // Lifecycle tracks the animation / activation phase of a Window.
@@ -177,11 +177,11 @@ func (w *Window) Update() {
 	}
 }
 
-// UpdateApp routes input to the goroutine and waits for the tick to ack.
-// Call only when lifecycle == LifecycleShown. After the ack the server
-// reads w.proc.shouldClose / drainLaunch() to handle command results.
-func (w *Window) UpdateApp(cursor draws.XY, events []input.Event) {
-	w.proc.sendTick(tickMsg{kind: tickUpdate, cursor: cursor, events: events})
+// UpdateApp routes the input frame to the goroutine and waits for the tick
+// to ack. Call only when lifecycle == LifecycleShown. After the ack the
+// server reads w.proc.shouldClose / drainLaunch() to handle command results.
+func (w *Window) UpdateApp(frame mosapp.Frame) {
+	w.proc.sendTick(tickMsg{kind: tickUpdate, frame: frame})
 	w.proc.drain(w.ctx.ws)
 }
 

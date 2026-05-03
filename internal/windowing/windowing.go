@@ -94,6 +94,26 @@ func (ws *WindowingServer) ToggleKeyboard() {
 	}
 }
 
+// Lock / Unlock delegate to the bound Lock implementation, if any.
+// IsLocked reports the current lock state (false when no Lock is bound).
+func (ws *WindowingServer) Lock() {
+	if ws.lock != nil && !ws.lock.IsLocked() {
+		ws.lock.Lock()
+		ws.log("lock")
+	}
+}
+
+func (ws *WindowingServer) Unlock() {
+	if ws.lock != nil && ws.lock.IsLocked() {
+		ws.lock.Unlock()
+		ws.log("unlock")
+	}
+}
+
+func (ws *WindowingServer) IsLocked() bool {
+	return ws.lock != nil && ws.lock.IsLocked()
+}
+
 func (ws *WindowingServer) ToggleCurtain() {
 	if ws.curtain == nil {
 		return
@@ -344,41 +364,52 @@ func (ws *WindowingServer) Update() {
 	events := ws.inputProducer.Poll()
 	cx, cy := input.MouseCursorPosition()
 	cursor := draws.XY{X: cx, Y: cy}
+	locked := ws.IsLocked()
 
 	sa := ws.SafeArea()
 	for _, w := range ws.windows {
 		w.ctx.setSafeArea(sa)
 	}
 
-	if ws.home != nil && !ws.showingRecents {
-		ws.home.Update()
-		if pos, size, clr, appID, ok := ws.home.TappedIcon(); ok {
-			if !ws.hasVisibleWindow() {
-				ws.launchApp(pos, size, clr, appID)
+	// While locked, the lock owns the entire input stream. Skip input-
+	// processing system UI updates so taps don't bleed through to the
+	// home / recents / curtain layers behind the overlay. The status bar
+	// still updates so the wall clock keeps ticking.
+	if !locked {
+		if ws.home != nil && !ws.showingRecents {
+			ws.home.Update()
+			if pos, size, clr, appID, ok := ws.home.TappedIcon(); ok {
+				if !ws.hasVisibleWindow() {
+					ws.launchApp(pos, size, clr, appID)
+				}
 			}
 		}
-	}
-	if ws.hist != nil && ws.hist.IsVisible() {
-		ws.hist.Update()
-	}
-	if ws.hist != nil && ws.showingRecents && ws.hist.IsInteractive() {
-		if pos, size, entry, ok := ws.hist.TappedCard(); ok {
-			ws.launchApp(pos, size, entry.Color, entry.AppID)
-			ws.hist.Hide()
-			ws.showingRecents = false
+		if ws.hist != nil && ws.hist.IsVisible() {
+			ws.hist.Update()
 		}
-	}
-	if ws.kb != nil {
-		ws.kb.Update()
+		if ws.hist != nil && ws.showingRecents && ws.hist.IsInteractive() {
+			if pos, size, entry, ok := ws.hist.TappedCard(); ok {
+				ws.launchApp(pos, size, entry.Color, entry.AppID)
+				ws.hist.Hide()
+				ws.showingRecents = false
+			}
+		}
+		if ws.kb != nil {
+			ws.kb.Update()
+		}
+		if ws.curtain != nil {
+			ws.curtain.Update()
+		}
 	}
 	if ws.statusBar != nil {
 		ws.statusBar.Update()
 	}
-	if ws.curtain != nil {
-		ws.curtain.Update()
-	}
 	if ws.lock != nil {
-		ws.lock.Update()
+		var lockFrame mosapp.Frame
+		if locked {
+			lockFrame = mosapp.Frame{Cursor: cursor, Events: events}
+		}
+		ws.lock.Update(lockFrame)
 	}
 
 	// Snapshot the slice: launchApp inside the loop would otherwise grow it.
@@ -392,12 +423,14 @@ func (ws *WindowingServer) Update() {
 		ws.logLifecycleChange(w, before)
 
 		if w.lifecycle == LifecycleShown {
-			// Only the active window receives input; others tick with no events.
-			var ev []input.Event
-			if w == active {
-				ev = events
+			// Only the active window receives input events; others tick with
+			// just the cursor position so animations driven by Update still
+			// see a coherent value. While locked, no app receives events.
+			frame := mosapp.Frame{Cursor: cursor}
+			if w == active && !locked {
+				frame.Events = events
 			}
-			w.UpdateApp(cursor, ev)
+			w.UpdateApp(frame)
 
 			if w.proc.shouldClose {
 				before := w.lifecycle

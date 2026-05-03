@@ -7,6 +7,7 @@ import (
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hndada/mos/apps"
+	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/event"
 	"github.com/hndada/mos/internal/input"
@@ -207,9 +208,18 @@ type simulator struct {
 	homeButtonText    draws.Text
 	recentsButtonText draws.Text
 	navGesture        ui.GestureDetector
+
+	// Per-frame input producers. Sim chrome buttons live in raw window-space;
+	// the nav-swipe lives in canvas-space. Each producer tracks its own
+	// lastPos in its own coord system. The windowing server has its own
+	// canvas-space producer in addition to navInput; both can poll the same
+	// frame's Ebiten state without conflict (inpututil's JustPressed is a
+	// frame-level boolean, not a one-shot consumer).
+	rawInput input.Producer
+	navInput input.Producer
 }
 
-const helpString = "P: Power   1/2/3: Bar-Flip-Fold   S: Active screen   B/Esc: Back   N: Curtain   K: Keys   V: Ring   L/F: Log"
+const helpString = "P: Power   X: Lock   1/2/3: Bar-Flip-Fold   S: Active screen   B/Esc: Back   N: Curtain   K: Keys   V: Ring   L/F: Log"
 
 const (
 	controlPanelH = 38.0
@@ -354,6 +364,7 @@ func (s *simulator) applyMode() {
 	s.ws.SetStatusBar(apps.NewDefaultStatusBar(active.w, active.h))
 	s.ws.SetCurtain(apps.NewDefaultCurtain(active.w, active.h))
 	s.ws.SetKeyboard(apps.NewDefaultKeyboard(active.w, active.h))
+	s.ws.SetLock(apps.NewDefaultLock(active.w, active.h))
 	s.display.W = active.w
 	s.display.H = active.h
 	s.display.SetPowered(true)
@@ -457,8 +468,20 @@ func (s *simulator) Update() error {
 	rawCursor := draws.XY{X: float64(rawX), Y: float64(rawY)}
 
 	if input.IsKeyJustPressed(input.KeyP) {
-		s.display.SetPowered(!s.display.Powered())
+		before := s.display.Powered()
+		s.display.SetPowered(!before)
 		s.logf("power=%v", s.display.Powered())
+		// Power off → on auto-locks the screen, mirroring real phone behaviour.
+		if !before && s.display.Powered() {
+			s.ws.Lock()
+		}
+	}
+	if input.IsKeyJustPressed(input.KeyX) {
+		if s.ws.IsLocked() {
+			s.ws.Unlock()
+		} else {
+			s.ws.Lock()
+		}
 	}
 	if input.IsKeyJustPressed(input.KeyDigit1) {
 		s.setMode(displayModeBar)
@@ -502,20 +525,25 @@ func (s *simulator) Update() error {
 	}
 	if s.display.Powered() {
 		active := s.groups[s.mode][s.activeDisplay]
-		if s.backButton.Update(rawCursor) {
+
+		// Chrome buttons run in raw window coords (offset is still 0 here).
+		rawFrame := mosapp.Frame{Cursor: rawCursor, Events: s.rawInput.Poll()}
+		if s.backButton.Update(rawFrame) {
 			s.ws.GoBack()
 		}
-		if s.homeButton.Update(rawCursor) {
+		if s.homeButton.Update(rawFrame) {
 			s.ws.GoHome()
 		}
-		if s.recentsButton.Update(rawCursor) {
+		if s.recentsButton.Update(rawFrame) {
 			s.ws.GoRecents()
 		}
 
+		// Switch to canvas coords for the nav-swipe and the windowing server.
 		input.SetCursorOffset(active.x, active.y)
 		x, y := input.MouseCursorPosition()
 		cursor := draws.XY{X: x, Y: y}
-		if s.navGesture.Update(cursor).Kind == ui.GestureSwipeUp {
+		navFrame := mosapp.Frame{Cursor: cursor, Events: s.navInput.Poll()}
+		if s.navGesture.Update(navFrame).Kind == ui.GestureSwipeUp {
 			s.ws.GoHome()
 		}
 		s.ws.Update()

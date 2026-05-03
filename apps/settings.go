@@ -5,7 +5,9 @@ import (
 	"image/color"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
+	"github.com/hndada/mos/internal/event"
 	"github.com/hndada/mos/internal/input"
 	"github.com/hndada/mos/ui"
 )
@@ -50,6 +52,7 @@ type settingsRow struct {
 
 // Settings is an app content that renders a scrollable settings list.
 type Settings struct {
+	ctx      mosapp.Context
 	rows     []*settingsRow
 	screenW  float64
 	screenH  float64
@@ -66,6 +69,12 @@ type Settings struct {
 	rowBg    draws.Sprite
 	sep      draws.Sprite
 }
+
+// OnCreate stores the context so toggle rows can publish system events.
+func (s *Settings) OnCreate(ctx mosapp.Context) { s.ctx = ctx }
+func (s *Settings) OnResume()                   {}
+func (s *Settings) OnPause()                    {}
+func (s *Settings) OnDestroy()                  {}
 
 func NewSettings(screenW, screenH float64) *Settings {
 	s := &Settings{screenW: screenW, screenH: screenH}
@@ -190,32 +199,63 @@ func (s *Settings) contentCursor(screen draws.XY) draws.XY {
 	}
 }
 
-func (s *Settings) Update(cursor draws.XY) {
-	// Mouse-wheel scroll.
-	_, wy := input.MouseWheelPosition()
-	if wy != 0 {
-		s.scrollBy(-wy * 40)
-	}
-	// Drag scroll (vertical).
-	if input.IsMouseButtonPressed(input.MouseButtonLeft) {
-		_, y := input.MouseCursorPosition()
-		if s.dragging {
-			s.scrollBy(s.dragPrevY - y)
+func (s *Settings) Update(frame mosapp.Frame) {
+	// Wheel + drag scroll. We rebuild a content-space frame for child widgets
+	// using the post-scroll content cursor, but scrolling itself reads the
+	// raw screen-space events.
+	for _, ev := range frame.Events {
+		switch ev.Kind {
+		case input.EventWheel:
+			s.scrollBy(-ev.Wheel.Y * 40)
+		case input.EventDown:
+			s.dragging = true
+			s.dragPrevY = ev.Pos.Y
+		case input.EventMove:
+			if s.dragging {
+				s.scrollBy(s.dragPrevY - ev.Pos.Y)
+				s.dragPrevY = ev.Pos.Y
+			}
+		case input.EventUp:
+			s.dragging = false
 		}
-		s.dragging = true
-		s.dragPrevY = y
-	} else {
-		s.dragging = false
 	}
 
-	cc := s.contentCursor(cursor)
+	// Translate the frame into content-space for child widgets.
+	cc := s.contentCursor(frame.Cursor)
+	childFrame := mosapp.Frame{Cursor: cc}
+	if len(frame.Events) > 0 {
+		childFrame.Events = make([]input.Event, len(frame.Events))
+		for i, ev := range frame.Events {
+			ev.Pos = s.contentCursor(ev.Pos)
+			childFrame.Events[i] = ev
+		}
+	}
 	for _, r := range s.rows {
 		if r.toggle != nil {
-			r.toggle.Update(cc)
+			if r.toggle.Update(childFrame) {
+				s.onToggleChanged(r)
+			}
 		}
 		if r.slider != nil {
-			r.slider.Update(cc)
+			r.slider.Update(childFrame)
 		}
+	}
+}
+
+// onToggleChanged maps a row label to a system event topic and broadcasts
+// the toggle's new value so subscribers (Hello, the future theme system,
+// etc.) can react. Unknown labels are silently ignored.
+func (s *Settings) onToggleChanged(r *settingsRow) {
+	if s.ctx == nil || r.toggle == nil {
+		return
+	}
+	bus := s.ctx.Bus()
+	if bus == nil {
+		return
+	}
+	switch r.label {
+	case "Dark Mode":
+		bus.Publish(event.System{Topic: event.TopicDarkMode, Value: r.toggle.Value})
 	}
 }
 

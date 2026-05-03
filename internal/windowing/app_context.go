@@ -6,7 +6,6 @@ import (
 	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/event"
-	"github.com/hndada/mos/internal/input"
 )
 
 // windowContext implements app.Context on behalf of a single window.
@@ -52,10 +51,6 @@ func (c *windowContext) SafeArea() mosapp.SafeArea {
 	c.safeAreaMu.RLock()
 	defer c.safeAreaMu.RUnlock()
 	return c.safeArea
-}
-
-func (c *windowContext) PollInput() (input.Event, bool) {
-	return c.proc.pollInput()
 }
 
 func (c *windowContext) Finish()             { c.proc.cmdCh <- CmdFinish{} }

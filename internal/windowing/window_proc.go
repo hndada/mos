@@ -1,11 +1,7 @@
 package windowing
 
 import (
-	"sync"
-
 	mosapp "github.com/hndada/mos/internal/app"
-	"github.com/hndada/mos/internal/draws"
-	"github.com/hndada/mos/internal/input"
 )
 
 // windowProc is the IPC fixture between the windowing server (main goroutine)
@@ -16,8 +12,8 @@ import (
 // Channel map:
 //
 //	tickCh: server → app. The server sends one tickMsg per frame describing
-//	        either a content Update or a lifecycle callback. The goroutine
-//	        processes it and signals back via ackCh.
+//	        either a content Update (with the input Frame) or a lifecycle
+//	        callback. The goroutine processes it and signals back via ackCh.
 //	ackCh:  app → server. Lock-step barrier — the server blocks on ackCh
 //	        after every tick send so app state is never read concurrently
 //	        with mutation.
@@ -49,28 +45,21 @@ type windowProc struct {
 	// windowing server on the main goroutine each frame.
 	shouldClose   bool
 	pendingLaunch string
-
-	// eventsForTick is populated by the goroutine before content.Update and
-	// drained one event at a time via PollInput. The mutex is defensive in
-	// case an app spawns its own goroutines that also call PollInput.
-	eventsMu      sync.Mutex
-	eventsForTick []input.Event
 }
 
 // tickKind enumerates the actions the goroutine must perform per tick.
 type tickKind int
 
 const (
-	tickUpdate  tickKind = iota // run content.Update
+	tickUpdate  tickKind = iota // run content.Update(frame)
 	tickResume                  // run OnResume
 	tickPause                   // run OnPause
 	tickDestroy                 // run OnDestroy and exit
 )
 
 type tickMsg struct {
-	kind   tickKind
-	cursor draws.XY
-	events []input.Event
+	kind  tickKind
+	frame mosapp.Frame
 }
 
 func newWindowProc() *windowProc {
@@ -107,15 +96,7 @@ func (p *windowProc) run(content mosapp.Content, ctx *windowContext) {
 	for msg := range p.tickCh {
 		switch msg.kind {
 		case tickUpdate:
-			p.eventsMu.Lock()
-			p.eventsForTick = msg.events
-			p.eventsMu.Unlock()
-
-			content.Update(msg.cursor)
-
-			p.eventsMu.Lock()
-			p.eventsForTick = nil
-			p.eventsMu.Unlock()
+			content.Update(msg.frame)
 
 			// Honour the legacy ShouldClose() opt-in: if the app exposes one
 			// and reports true, self-issue a Finish so we don't have to read
@@ -146,20 +127,6 @@ func (p *windowProc) run(content mosapp.Content, ctx *windowContext) {
 		}
 		p.ackCh <- struct{}{}
 	}
-}
-
-// pollInput dequeues the next event for the current tick. The goroutine
-// alone produces events via PollInput; the mutex protects against an app
-// spawning its own goroutines that try to drain in parallel.
-func (p *windowProc) pollInput() (input.Event, bool) {
-	p.eventsMu.Lock()
-	defer p.eventsMu.Unlock()
-	if len(p.eventsForTick) == 0 {
-		return input.Event{}, false
-	}
-	ev := p.eventsForTick[0]
-	p.eventsForTick = p.eventsForTick[1:]
-	return ev, true
 }
 
 // drain consumes all queued commands from the goroutine and dispatches

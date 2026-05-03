@@ -1,6 +1,7 @@
 package ui
 
 import (
+	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/input"
 )
@@ -9,7 +10,7 @@ const wheelScrollSpeed = 40.0
 
 // ScrollBox is a viewport over content that may exceed it in either or both axes.
 // Scrolling is enabled per-axis automatically when ContentSize exceeds the viewport size.
-// Call HandleInput each frame, then use Offset() to shift children before drawing.
+// Call Update each frame, then use Offset() to shift children before drawing.
 type ScrollBox struct {
 	Box
 	ContentSize draws.XY
@@ -34,20 +35,30 @@ func (s *ScrollBox) ScrollBy(d draws.XY) {
 	s.offset.Y = min(max(s.offset.Y+d.Y, 0), m.Y)
 }
 
-// HandleInput processes mouse wheel (both axes) and drag-to-scroll. Call once per frame.
-func (s *ScrollBox) HandleInput(cursor draws.XY) {
-	wx, wy := input.MouseWheelPosition()
-	if wx != 0 || wy != 0 {
-		s.ScrollBy(draws.XY{X: -wx * wheelScrollSpeed, Y: -wy * wheelScrollSpeed})
-	}
-
-	if input.IsMouseButtonPressed(input.MouseButtonLeft) && s.In(cursor) {
-		if s.scrolling {
-			s.ScrollBy(s.prevCursor.Sub(cursor))
+// Update processes wheel and drag-to-scroll events from the frame.
+// Drag tracking starts only when a Down event lands inside the box; Move
+// events (with the button held, indicated by an in-flight tracking state)
+// pan the offset.
+func (s *ScrollBox) Update(frame mosapp.Frame) {
+	for _, ev := range frame.Events {
+		switch ev.Kind {
+		case input.EventWheel:
+			s.ScrollBy(draws.XY{
+				X: -ev.Wheel.X * wheelScrollSpeed,
+				Y: -ev.Wheel.Y * wheelScrollSpeed,
+			})
+		case input.EventDown:
+			if s.In(ev.Pos) {
+				s.scrolling = true
+				s.prevCursor = ev.Pos
+			}
+		case input.EventMove:
+			if s.scrolling {
+				s.ScrollBy(s.prevCursor.Sub(ev.Pos))
+				s.prevCursor = ev.Pos
+			}
+		case input.EventUp:
+			s.scrolling = false
 		}
-		s.scrolling = true
-		s.prevCursor = cursor
-	} else {
-		s.scrolling = false
 	}
 }

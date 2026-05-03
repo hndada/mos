@@ -4,6 +4,7 @@ import (
 	"image/color"
 
 	"github.com/hndada/mos/apps"
+	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 )
 
@@ -63,6 +64,9 @@ type Lock interface {
 	Lock()
 	Unlock()
 	IsLocked() bool
-	Update()
+	// Update receives the per-frame input frame. While IsLocked, the
+	// windowing server gates all other input layers and routes events here
+	// only — typically a swipe-up gesture unlocks.
+	Update(frame mosapp.Frame)
 	Draw(dst draws.Image)
 }

@@ -9,11 +9,22 @@ import (
 	"github.com/hndada/mos/internal/input"
 )
 
+// Frame is the per-tick input bundle handed to Content.Update. Cursor is
+// the latest pointer position (canvas-relative); Events is the ordered
+// list of input events that occurred since the last tick.
+//
+// Apps that only need a cursor position can read frame.Cursor and ignore
+// Events; widgets in the ui package consume the full Frame.
+type Frame struct {
+	Cursor draws.XY
+	Events []input.Event
+}
+
 // Content is the interface every MOS app must implement.
 // Update is called each frame while the window is fully open (Shown);
 // Draw is called every frame the window is visible, including open/close animations.
 type Content interface {
-	Update(cursor draws.XY)
+	Update(frame Frame)
 	Draw(dst draws.Image)
 }
 
@@ -69,12 +80,6 @@ type Context interface {
 	// current frame. The value can change between frames (e.g. when the
 	// soft keyboard is shown).
 	SafeArea() SafeArea
-
-	// PollInput returns the next pending input event for this tick, with
-	// ok==true. When no more events are queued for this tick, ok==false.
-	// Apps that only need a cursor can ignore this; one is supplied to
-	// Update directly.
-	PollInput() (input.Event, bool)
 
 	// Finish asks the windowing server to close this app's window.
 	Finish()

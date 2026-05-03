@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2/vector"
+	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/ui"
 )
@@ -84,8 +85,8 @@ func newCircleSprite(diameter float64, clr color.Color) draws.Sprite {
 	return draws.NewSprite(img)
 }
 
-func (c *Call) Update(cursor draws.XY) {
-	if c.endTap.Update(cursor) {
+func (c *Call) Update(frame mosapp.Frame) {
+	if c.endTap.Update(frame) {
 		c.ended = true
 		return
 	}
