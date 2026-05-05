@@ -64,7 +64,7 @@ func (i Image) SubImage(x1, y1, x2, y2 int) Image {
 		return Image{}
 	}
 	rect := image.Rect(x1, y1, x2, y2)
-	return i.Image.SubImage(rect).(Image)
+	return Image{i.Image.SubImage(rect).(*ebiten.Image)}
 }
 
 //	func (img Image) In(p XY) bool {

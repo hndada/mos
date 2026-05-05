@@ -209,6 +209,9 @@ type simulator struct {
 	recentsButtonText draws.Text
 	navGesture        ui.GestureDetector
 
+	// AOD renders a low-power clock when the display is "powered off."
+	aod *apps.DefaultAOD
+
 	// Per-frame input producers. Sim chrome buttons live in raw window-space;
 	// the nav-swipe lives in canvas-space. Each producer tracks its own
 	// lastPos in its own coord system. The windowing server has its own
@@ -219,7 +222,7 @@ type simulator struct {
 	navInput input.Producer
 }
 
-const helpString = "P: Power   X: Lock   1/2/3: Bar-Flip-Fold   S: Active screen   B/Esc: Back   N: Curtain   K: Keys   V: Ring   L/F: Log"
+const helpString = "P: Power   X: Lock   1/2/3: Bar-Flip-Fold   S: Screen   B/Esc: Back   N: Curtain   K: Keys   V: Ring   W: Split   I: PiP   G: Float   Tab: Focus   L/F: Log"
 
 const (
 	controlPanelH = 38.0
@@ -343,7 +346,8 @@ func (s *simulator) applyMode() {
 	active := group[s.activeDisplay]
 
 	s.canvas = draws.CreateImage(active.w, active.h)
-	s.ws = windowing.WindowingServer{ScreenW: active.w, ScreenH: active.h, Bus: event.NewBus()}
+	bus := event.NewBus()
+	s.ws = windowing.WindowingServer{ScreenW: active.w, ScreenH: active.h, Bus: bus}
 	s.ws.SetLogger(s.logLine)
 	s.ws.SetScreenshots(s.screenshots)
 	s.ws.SetWallpaper(apps.NewDefaultWallpaper(active.w, active.h))
@@ -362,9 +366,12 @@ func (s *simulator) applyMode() {
 	}
 
 	s.ws.SetStatusBar(apps.NewDefaultStatusBar(active.w, active.h))
-	s.ws.SetCurtain(apps.NewDefaultCurtain(active.w, active.h))
+	curtain := apps.NewDefaultCurtain(active.w, active.h, bus)
+	curtain.SubscribeBus()
+	s.ws.SetCurtain(curtain)
 	s.ws.SetKeyboard(apps.NewDefaultKeyboard(active.w, active.h))
 	s.ws.SetLock(apps.NewDefaultLock(active.w, active.h))
+	s.aod = apps.NewDefaultAOD(active.w, active.h)
 	s.display.W = active.w
 	s.display.H = active.h
 	s.display.SetPowered(true)
@@ -523,6 +530,23 @@ func (s *simulator) Update() error {
 	if input.IsKeyJustPressed(input.KeyN) {
 		s.ws.ToggleCurtain()
 	}
+	if input.IsKeyJustPressed(input.KeyW) {
+		s.ws.EnterSplit()
+	}
+	if input.IsKeyJustPressed(input.KeyI) {
+		s.ws.EnterPip()
+	}
+	if input.IsKeyJustPressed(input.KeyG) {
+		s.ws.EnterFreeform()
+	}
+	if input.IsKeyJustPressed(input.KeyTab) {
+		s.ws.CycleFocus()
+	}
+	if !s.display.Powered() && s.aod != nil {
+		// AOD ticks even when the display is "off" so the clock keeps moving.
+		s.aod.Update()
+	}
+
 	if s.display.Powered() {
 		active := s.groups[s.mode][s.activeDisplay]
 
@@ -562,6 +586,11 @@ func (s *simulator) Draw(screen *ebiten.Image) {
 			s.screenshots = s.ws.Screenshots()
 			s.captureNext = false
 		}
+	} else if s.aod != nil {
+		// Display is off — paint the AOD layer so the active slot below shows
+		// a dim clock instead of going to the slot's idle background.
+		s.canvas.Clear()
+		s.aod.Draw(s.canvas)
 	}
 
 	for i, sl := range s.simGroup.slots {
@@ -571,7 +600,10 @@ func (s *simulator) Draw(screen *ebiten.Image) {
 
 		op := &ebiten.DrawImageOptions{}
 		op.GeoM.Translate(sl.x, sl.y)
-		if i == s.activeDisplay && s.display.Powered() {
+		// Active slot shows the live canvas — whether powered (full UI) or
+		// not (AOD has been painted onto the canvas in Draw above). Inactive
+		// slots fall back to the idle slot background.
+		if i == s.activeDisplay {
 			screen.DrawImage(s.canvas.Image, op)
 		} else {
 			screen.DrawImage(sl.bg.Image, op)

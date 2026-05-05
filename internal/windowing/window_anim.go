@@ -67,3 +67,24 @@ func (a *WindowAnim) Done() bool {
 		a.sizeW.Done() && a.sizeH.Done() &&
 		a.alpha.Done()
 }
+
+// Retarget animates position and size to a new placement, leaving alpha
+// unchanged. Used when switching a window between fullscreen, split, pip,
+// and freeform modes. Each property rebases from its current animated value
+// so a retarget mid-flight is continuous (no positional jump).
+func (a *WindowAnim) Retarget(center, size draws.XY, dur time.Duration) {
+	ease := tween.EaseOutExponential
+	a.posX.To(center.X, dur, ease)
+	a.posY.To(center.Y, dur, ease)
+	a.sizeW.To(size.X, dur, ease)
+	a.sizeH.To(size.Y, dur, ease)
+}
+
+// SnapTo places the window at center/size instantly (no animation).
+// Used for real-time drag operations that must track the pointer with zero lag.
+func (a *WindowAnim) SnapTo(center, size draws.XY) {
+	a.posX.Snap(center.X)
+	a.posY.Snap(center.Y)
+	a.sizeW.Snap(size.X)
+	a.sizeH.Snap(size.Y)
+}

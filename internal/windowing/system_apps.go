@@ -56,7 +56,17 @@ type Curtain interface {
 	Hide()
 	Toggle()
 	IsVisible() bool
-	Update()
+	// Update receives the per-frame input frame. While IsVisible, the
+	// windowing server gates the layers underneath (home, recents, apps,
+	// keyboard) and routes events here so taps land on quick tiles
+	// instead of bleeding through.
+	Update(frame mosapp.Frame)
+	// SetBackground supplies a blurred snapshot of the scene that lies
+	// visually behind the curtain panel. The windowing server calls this
+	// immediately before Draw each frame so the panel can render a
+	// frosted-glass backdrop. Implementations that do not use blur may
+	// ignore the argument.
+	SetBackground(bg draws.Image)
 	Draw(dst draws.Image)
 }
 
