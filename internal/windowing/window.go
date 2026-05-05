@@ -2,11 +2,13 @@ package windowing
 
 import (
 	"image/color"
+	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hndada/mos/apps"
 	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
+	"github.com/hndada/mos/internal/input"
 )
 
 // Lifecycle tracks the animation / activation phase of a Window.
@@ -51,6 +53,13 @@ func (l Lifecycle) String() string {
 // alpha) are driven by a single WindowAnim, whose retargetable transitions
 // allow Dismiss to interrupt an in-flight open without snapping.
 //
+// Multi-window layout: in fullscreen mode the canvas fills the screen and
+// placement equals the screen rect. In split/pip/float modes the canvas is
+// still the full screen size but the WindowAnim targets a smaller rect;
+// the compositor scales the canvas to fit that rect, and input events are
+// reverse-transformed from display-rect coords back to canvas-rect coords
+// before being sent to the app goroutine (see ToCanvasFrame).
+//
 // The app's content is hosted on a per-window goroutine via windowProc;
 // this Window struct only exposes main-thread operations (animation,
 // composition, lifecycle dispatch). See window_proc.go for the boundary
@@ -67,6 +76,8 @@ type Window struct {
 	screenW   float64
 	screenH   float64
 	anim      WindowAnim
+	mode      WindowMode
+	placement WindowPlacement
 }
 
 // NewWindow creates a window, starts its goroutine, and waits for OnCreate
@@ -91,6 +102,8 @@ func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW
 		iconSize:  iconSize,
 		screenW:   screenW,
 		screenH:   screenH,
+		mode:      WindowModeFullscreen,
+		placement: fullscreenPlacement(screenW, screenH),
 	}
 	w.anim.OpenFrom(iconPos, iconSize, draws.XY{X: screenW, Y: screenH}, DurationOpening)
 
@@ -122,6 +135,8 @@ func NewRestoredWindow(state AppState, screenW, screenH float64, ws *WindowingSe
 		iconSize:  draws.XY{X: screenW, Y: screenH},
 		screenW:   screenW,
 		screenH:   screenH,
+		mode:      WindowModeFullscreen,
+		placement: fullscreenPlacement(screenW, screenH),
 	}
 	w.anim.SnapOpen(draws.XY{X: screenW, Y: screenH})
 
@@ -204,6 +219,60 @@ func (w *Window) HistoryEntry() apps.HistoryEntry {
 
 func (w *Window) AppState() AppState { return AppState{ID: w.app.ID, Color: w.clr} }
 func (w *Window) AppID() string      { return w.app.ID }
+func (w *Window) Mode() WindowMode   { return w.mode }
+
+// SetPlacement retargets the window animation to a new display rect and
+// records the final placement. The mode field must be set by the caller.
+func (w *Window) SetPlacement(p WindowPlacement, dur time.Duration) {
+	w.placement = p
+	w.anim.Retarget(p.Center, p.Size, dur)
+}
+
+// ToCanvasFrame translates screen-space coordinates in frame to canvas-space.
+// The canvas is always screenW×screenH; the window display rect is whatever
+// the animation currently reports. Events outside the display rect are still
+// included but with out-of-bounds canvas coordinates (the app handles them
+// gracefully because hit-tests will fail on its own widgets).
+func (w *Window) ToCanvasFrame(frame mosapp.Frame, screenW, screenH float64) mosapp.Frame {
+	center := w.anim.Pos()
+	size := w.anim.Size()
+	if size.X == 0 || size.Y == 0 {
+		return frame
+	}
+	minX := center.X - size.X/2
+	minY := center.Y - size.Y/2
+	sx := screenW / size.X
+	sy := screenH / size.Y
+
+	out := mosapp.Frame{
+		Cursor: draws.XY{
+			X: (frame.Cursor.X - minX) * sx,
+			Y: (frame.Cursor.Y - minY) * sy,
+		},
+	}
+	if len(frame.Events) > 0 {
+		out.Events = make([]input.Event, len(frame.Events))
+		for i, ev := range frame.Events {
+			ev.Pos = draws.XY{
+				X: (ev.Pos.X - minX) * sx,
+				Y: (ev.Pos.Y - minY) * sy,
+			}
+			out.Events[i] = ev
+		}
+	}
+	return out
+}
+
+// ContainsScreenPos reports whether a screen-space position falls inside the
+// window's current animated display rect.
+func (w *Window) ContainsScreenPos(pos draws.XY) bool {
+	c := w.anim.Pos()
+	sz := w.anim.Size()
+	minX := c.X - sz.X/2
+	minY := c.Y - sz.Y/2
+	return pos.X >= minX && pos.X < minX+sz.X &&
+		pos.Y >= minY && pos.Y < minY+sz.Y
+}
 
 func (w *Window) Draw(dst draws.Image) {
 	if !w.lifecycle.Visible() {
