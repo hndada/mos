@@ -22,4 +22,6 @@ func init() {
 		sz := ctx.ScreenSize()
 		return NewSceneTest(sz.X, sz.Y)
 	})
+
+	mosapp.Register("showcase", NewShowcaseApp)
 }
