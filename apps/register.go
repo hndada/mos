@@ -18,6 +18,8 @@ func init() {
 		return NewCall(sz.X, sz.Y)
 	})
 
+	mosapp.Register("message", NewMessageApp)
+
 	mosapp.Register("scene-test", func(ctx mosapp.Context) mosapp.Content {
 		sz := ctx.ScreenSize()
 		return NewSceneTest(sz.X, sz.Y)
