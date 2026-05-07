@@ -62,6 +62,14 @@ type WindowingServer struct {
 	blurSnap draws.Image
 	blurOut  draws.Image
 	sceneBlur *draws.Blur
+
+	// Timer-based activity tracking.
+	// lastFrameActive is set to true during Update whenever there is real work
+	// to do (input events, in-flight animations, explicit invalidations, or a
+	// clock-minute boundary crossing). Callers read it via WasActive() after
+	// Update returns and use it to throttle the Ebiten TPS when idle.
+	lastFrameActive bool
+	lastMinute      int // previous time.Now().Minute(); used for clock-tick detection
 }
 
 func (ws *WindowingServer) SetLogger(logger func(string)) { ws.Logger = logger }
@@ -563,6 +571,15 @@ func (ws *WindowingServer) Shutdown() {
 	ws.keyboardFocus = nil
 }
 
+// WasActive reports whether the most recent Update call observed any real
+// work: input events, in-flight animations, explicit invalidations, or a
+// clock-minute boundary crossing.
+//
+// Callers (typically the simulator) use this to throttle the Ebiten TPS:
+// keep full rate while WasActive is true and drop to a low polling rate
+// once consecutive idle frames exceed a threshold.
+func (ws *WindowingServer) WasActive() bool { return ws.lastFrameActive }
+
 // InvalidateAll marks every shown window as dirty so that each app's Draw is
 // called on the next frame regardless of whether it received input. Use this
 // after a global state change such as a theme switch.
@@ -586,6 +603,26 @@ func (ws *WindowingServer) Update() {
 	cx, cy := input.MouseCursorPosition()
 	cursor := draws.XY{X: cx, Y: cy}
 	locked := ws.IsLocked()
+
+	// ── Activity probe (for TPS throttling) ──────────────────────────────────
+	// Evaluate before processing so that CompareAndSwap in the per-window loop
+	// does not consume the invalidated flag before we read it here.
+	ws.lastFrameActive = len(events) > 0
+	if m := time.Now().Minute(); m != ws.lastMinute {
+		// Minute boundary crossed — status bar clock text must change.
+		ws.lastMinute = m
+		ws.lastFrameActive = true
+	}
+	if ws.curtain != nil && ws.curtain.IsVisible() {
+		ws.lastFrameActive = true
+	}
+	for _, w := range ws.windows {
+		if !w.anim.Done() || w.ctx.invalidated.Load() {
+			ws.lastFrameActive = true
+			break
+		}
+	}
+	// ─────────────────────────────────────────────────────────────────────────
 
 	sa := ws.SafeArea()
 	for _, w := range ws.windows {

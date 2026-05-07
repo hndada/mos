@@ -239,6 +239,12 @@ type simulator struct {
 	// isDark tracks the current theme so the "Dark" action can toggle it.
 	isDark bool
 
+	// Timer-based update throttling.
+	// idleFrames counts consecutive frames with no windowing-server activity.
+	// Once it exceeds idleAfterFrames the Ebiten TPS is lowered to idleTPS to
+	// reduce CPU usage while the screen is static.
+	idleFrames int
+
 	// Per-frame input producers. Sim chrome buttons live in raw window-space;
 	// the nav-swipe lives in canvas-space. Each producer tracks its own
 	// lastPos in its own coord system. The windowing server has its own
@@ -250,6 +256,13 @@ type simulator struct {
 }
 
 const helpString = "P: Power   X: Lock   1/2/3: Bar-Flip-Fold   S: Screen   O: Rotate   B/Esc: Back   N: Curtain   K: Keys   V: Ring   W: Split   I: PiP   G: Float   Tab: Focus   L/F: Log"
+
+// TPS throttling constants.
+const (
+	fullTPS         = 60  // normal interactive rate
+	idleTPS         = 10  // polling rate when display is idle (~100 ms per tick)
+	idleAfterFrames = 120 // frames at fullTPS before entering idle (2 s)
+)
 
 const (
 	controlPanelH = 38.0
@@ -703,18 +716,24 @@ func (s *simulator) Update() error {
 	rawFrame := mosapp.Frame{Cursor: rawCursor, Events: s.rawInput.Poll()}
 	s.actionPanel.Update(rawFrame)
 
+	// Assume idle until proven otherwise.
+	frameActive := false
+
 	if s.display.Powered() {
 		active := s.groups[s.mode][s.activeDisplay]
 
 		// On-screen nav buttons share rawFrame with the action panel.
 		if s.backButton.Update(rawFrame) {
 			s.ws.GoBack()
+			frameActive = true
 		}
 		if s.homeButton.Update(rawFrame) {
 			s.ws.GoHome()
+			frameActive = true
 		}
 		if s.recentsButton.Update(rawFrame) {
 			s.ws.GoRecents()
+			frameActive = true
 		}
 
 		// Switch to canvas coords for the nav-swipe and the windowing server.
@@ -724,9 +743,35 @@ func (s *simulator) Update() error {
 		navFrame := mosapp.Frame{Cursor: cursor, Events: s.navInput.Poll()}
 		if s.navGesture.Update(navFrame).Kind == ui.GestureSwipeUp {
 			s.ws.GoHome()
+			frameActive = true
 		}
 		s.ws.Update()
+		if s.ws.WasActive() {
+			frameActive = true
+		}
 	}
+
+	// Also treat any raw input (action panel clicks, keyboard shortcuts) as
+	// activity so TPS stays high while the user is interacting with the sim chrome.
+	if len(rawFrame.Events) > 0 {
+		frameActive = true
+	}
+
+	// TPS throttling: drop to idleTPS after idleAfterFrames of no activity to
+	// reduce CPU usage when the display is static. Restore immediately on activity.
+	if frameActive {
+		s.idleFrames = 0
+	} else {
+		s.idleFrames++
+	}
+	targetTPS := fullTPS
+	if s.idleFrames > idleAfterFrames {
+		targetTPS = idleTPS
+	}
+	if ebiten.TPS() != targetTPS {
+		ebiten.SetTPS(targetTPS)
+	}
+
 	return nil
 }
 
