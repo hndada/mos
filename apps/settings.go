@@ -1,10 +1,8 @@
 package apps
 
 import (
-	"image"
 	"image/color"
 
-	"github.com/hajimehoshi/ebiten/v2"
 	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/event"
@@ -51,18 +49,19 @@ type settingsRow struct {
 }
 
 // Settings is an app content that renders a scrollable settings list.
+// Content rows are rendered lazily: only rows that intersect the visible
+// viewport are drawn each frame (O(visible rows), not O(all rows)).
 type Settings struct {
 	ctx      mosapp.Context
 	rows     []*settingsRow
 	screenW  float64
 	screenH  float64
 	contentH float64
-	// scroll state
-	scrollOff float64
-	dragging  bool
-	dragPrevY float64
-	// pre-allocated canvas for the content area
-	canvas   draws.Image
+
+	// vl manages the scroll offset and viewport-sized canvas.
+	// It replaces the old scrollOff/dragging/canvas fields.
+	vl ui.VirtualList
+
 	titleBg  draws.Sprite
 	title    draws.Text
 	headerBg draws.Sprite
@@ -126,7 +125,17 @@ func NewSettings(screenW, screenH float64) *Settings {
 		y += h
 	}
 	s.contentH = y
-	s.canvas = draws.CreateImage(screenW, s.contentH)
+
+	viewportY := settingsStatusH + settingsTitleH
+	viewportH := screenH - viewportY
+	s.vl = ui.VirtualList{
+		X:      0,
+		Y:      viewportY,
+		W:      screenW,
+		H:      viewportH,
+		TotalH: s.contentH,
+	}
+
 	s.initAssets()
 	return s
 }
@@ -179,48 +188,21 @@ func (s *Settings) initAssets() {
 	}
 }
 
-func (s *Settings) viewportH() float64 {
-	return s.screenH - settingsStatusH - settingsTitleH
-}
-
-func (s *Settings) maxScroll() float64 {
-	return max(0, s.contentH-s.viewportH())
-}
-
-func (s *Settings) scrollBy(dy float64) {
-	s.scrollOff = min(max(s.scrollOff+dy, 0), s.maxScroll())
-}
-
-// contentCursor transforms a screen-space cursor into content-space.
+// contentCursor converts a screen-space position into content-space by
+// undoing the title offset and adding the current scroll offset.
 func (s *Settings) contentCursor(screen draws.XY) draws.XY {
 	return draws.XY{
 		X: screen.X,
-		Y: screen.Y - settingsStatusH - settingsTitleH + s.scrollOff,
+		Y: screen.Y - settingsStatusH - settingsTitleH + s.vl.ScrollY,
 	}
 }
 
 func (s *Settings) Update(frame mosapp.Frame) {
-	// Wheel + drag scroll. We rebuild a content-space frame for child widgets
-	// using the post-scroll content cursor, but scrolling itself reads the
-	// raw screen-space events.
-	for _, ev := range frame.Events {
-		switch ev.Kind {
-		case input.EventWheel:
-			s.scrollBy(-ev.Wheel.Y * 40)
-		case input.EventDown:
-			s.dragging = true
-			s.dragPrevY = ev.Pos.Y
-		case input.EventMove:
-			if s.dragging {
-				s.scrollBy(s.dragPrevY - ev.Pos.Y)
-				s.dragPrevY = ev.Pos.Y
-			}
-		case input.EventUp:
-			s.dragging = false
-		}
-	}
+	// VirtualList handles wheel + drag-to-scroll; no manual scroll logic needed.
+	s.vl.Update(frame)
 
-	// Translate the frame into content-space for child widgets.
+	// Build a content-space frame so child widgets (toggle, slider) receive
+	// coordinates in the same space they were constructed in.
 	cc := s.contentCursor(frame.Cursor)
 	childFrame := mosapp.Frame{Cursor: cc}
 	if len(frame.Events) > 0 {
@@ -230,6 +212,8 @@ func (s *Settings) Update(frame mosapp.Frame) {
 			childFrame.Events[i] = ev
 		}
 	}
+	// Update all rows — even off-screen ones — to preserve gesture state
+	// (e.g. a slider drag that started before the row scrolled out of view).
 	for _, r := range s.rows {
 		if r.toggle != nil {
 			if r.toggle.Update(childFrame) {
@@ -260,61 +244,68 @@ func (s *Settings) onToggleChanged(r *settingsRow) {
 }
 
 func (s *Settings) Draw(dst draws.Image) {
-	// Title bar.
+	// Title bar — always fully visible; drawn directly to the screen.
 	s.titleBg.Draw(dst)
 	s.title.Draw(dst)
 
-	// Content rows onto canvas.
-	s.canvas.Fill(settingsBg)
-
+	// Clear the viewport canvas and paint only the visible rows.
+	s.vl.Begin(settingsBg)
 	for _, r := range s.rows {
-		s.drawRow(r)
+		rowH := settingsRowH
+		if r.kind == kindHeader {
+			rowH = settingsHdrH
+		}
+		if !s.vl.InViewport(r.y, r.y+rowH) {
+			continue // row is entirely off-screen — skip it
+		}
+		s.drawRow(r, s.vl.ContentToCanvas(r.y))
 	}
 
-	// Blit visible portion to screen.
-	clipY := int(s.scrollOff)
-	clipH := int(min(s.viewportH(), s.contentH-s.scrollOff))
-	if clipH <= 0 {
-		return
-	}
-	sub := s.canvas.Image.SubImage(
-		image.Rect(0, clipY, int(s.screenW), clipY+clipH),
-	).(*ebiten.Image)
-
-	op := &ebiten.DrawImageOptions{}
-	op.GeoM.Translate(0, settingsStatusH+settingsTitleH)
-	dst.DrawImage(sub, op)
+	// Blit the viewport canvas to its screen position.
+	s.vl.Draw(dst)
 }
 
-func (s *Settings) drawRow(r *settingsRow) {
+// drawRow paints one row into the VirtualList canvas.
+// yc is the canvas-local Y of the row's top edge (== content Y - ScrollY).
+func (s *Settings) drawRow(r *settingsRow, yc float64) {
+	canvas := s.vl.Canvas()
 	switch r.kind {
 	case kindHeader:
 		hdrSp := s.headerBg
-		hdrSp.Locate(0, r.y, draws.LeftTop)
-		hdrSp.Draw(s.canvas)
+		hdrSp.Locate(0, yc, draws.LeftTop)
+		hdrSp.Draw(canvas)
 
-		r.labelText.Draw(s.canvas)
+		// Re-locate label to canvas-local Y (cheap value-copy operation).
+		lbl := r.labelText
+		lbl.Locate(settingsPad, yc+settingsHdrH/2, draws.LeftMiddle)
+		lbl.Draw(canvas)
 
 	case kindToggle, kindSlider, kindNav:
 		rowSp := s.rowBg
-		rowSp.Locate(0, r.y, draws.LeftTop)
-		rowSp.Draw(s.canvas)
+		rowSp.Locate(0, yc, draws.LeftTop)
+		rowSp.Draw(canvas)
 
-		// Separator line at bottom of row.
 		sepSp := s.sep
-		sepSp.Locate(settingsPad, r.y+settingsRowH-1, draws.LeftTop)
-		sepSp.Draw(s.canvas)
+		sepSp.Locate(settingsPad, yc+settingsRowH-1, draws.LeftTop)
+		sepSp.Draw(canvas)
 
-		r.labelText.Draw(s.canvas)
+		lbl := r.labelText
+		lbl.Locate(settingsPad, yc+settingsRowH/2, draws.LeftMiddle)
+		lbl.Draw(canvas)
 
+		// DrawAt shifts all sprite Y positions by the canvas offset so that
+		// widgets stored in content-space appear at the right canvas position.
+		yOff := s.vl.ContentToCanvas(0) // == -ScrollY
 		if r.toggle != nil {
-			r.toggle.Draw(s.canvas)
+			r.toggle.DrawAt(canvas, yOff)
 		}
 		if r.slider != nil {
-			r.slider.Draw(s.canvas)
+			r.slider.DrawAt(canvas, yOff)
 		}
 		if r.kind == kindNav {
-			r.detailText.Draw(s.canvas)
+			det := r.detailText
+			det.Locate(s.screenW-settingsPad, yc+settingsRowH/2, draws.RightMiddle)
+			det.Draw(canvas)
 		}
 	}
 }

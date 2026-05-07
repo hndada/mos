@@ -94,20 +94,28 @@ func (t *Toggle) Update(frame mosapp.Frame) bool {
 	return false
 }
 
-func (t Toggle) Draw(dst draws.Image) {
+// Draw renders the toggle at its stored content-space position.
+func (t Toggle) Draw(dst draws.Image) { t.DrawAt(dst, 0) }
+
+// DrawAt renders the toggle with all Y coordinates shifted by yOffset.
+// Use this when drawing into a VirtualList canvas: pass vl.ContentToCanvas(row.Y).
+func (t Toggle) DrawAt(dst draws.Image, yOffset float64) {
 	// Off track — tinted with the SurfaceWidget theme colour.
 	off := t.trackOff
+	off.Position.Y += yOffset
 	off.ColorScale.Scale(theme.ScaleOf(theme.Active().Color(theme.SurfaceWidget)))
 	off.Draw(dst)
 
 	// On track — tinted with AccentSuccess; faded by onAlpha during animation.
 	on := t.trackOn
+	on.Position.Y += yOffset
 	on.ColorScale.Scale(theme.ScaleOf(theme.Active().Color(theme.AccentSuccess)))
 	on.ColorScale.ScaleAlpha(float32(t.onAlpha.Value()))
 	on.Draw(dst)
 
 	// Knob — tinted with the Knob theme colour.
 	knob := t.knob
+	knob.Position.Y += yOffset
 	knob.ColorScale.Scale(theme.ScaleOf(theme.Active().Color(theme.Knob)))
 	knob.Draw(dst)
 }
