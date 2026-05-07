@@ -120,8 +120,13 @@ func (p *placed) drawAll(dst draws.Image, ia func(string) IA) {
 // ── Low-level drawing helpers ─────────────────────────────────────────────────
 
 // solidWhite is a 1×1 white pixel reused for all fillRect calls.
-// Scaling via GeoM and colouring via ColorScale avoids per-frame allocations.
+// Scaling via GeoM and colouring via ColorScale avoids per-call image allocs.
 var solidWhite *ebiten.Image
+
+// fillRectOpts is a package-level DrawImageOptions reused by every fillRect
+// call. Because Draw runs on the main goroutine single-threaded, sharing a
+// single options struct is safe and avoids one heap allocation per colored rect.
+var fillRectOpts ebiten.DrawImageOptions
 
 func init() {
 	solidWhite = ebiten.NewImage(1, 1)
@@ -129,20 +134,23 @@ func init() {
 }
 
 // fillRect draws a solid-colour rectangle directly onto dst.
+// It never allocates; it reuses fillRectOpts, resetting fields before each use.
 func fillRect(dst draws.Image, r Rect, clr color.RGBA) {
 	if dst.IsEmpty() || r.W <= 0 || r.H <= 0 {
 		return
 	}
-	op := &ebiten.DrawImageOptions{}
-	op.GeoM.Scale(r.W, r.H)
-	op.GeoM.Translate(r.X, r.Y)
-	op.ColorScale.Scale(
+	// Reset to zero-value then repopulate. Assigning a zero struct is cheaper
+	// than allocating a new one and avoids touching the GC.
+	fillRectOpts = ebiten.DrawImageOptions{}
+	fillRectOpts.GeoM.Scale(r.W, r.H)
+	fillRectOpts.GeoM.Translate(r.X, r.Y)
+	fillRectOpts.ColorScale.Scale(
 		float32(clr.R)/255,
 		float32(clr.G)/255,
 		float32(clr.B)/255,
 		float32(clr.A)/255,
 	)
-	dst.DrawImage(solidWhite, op)
+	dst.DrawImage(solidWhite, &fillRectOpts)
 }
 
 // drawText positions a draws.Text at (x, y) with the given anchor and draws it.

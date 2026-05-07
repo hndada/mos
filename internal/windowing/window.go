@@ -64,20 +64,27 @@ func (l Lifecycle) String() string {
 // this Window struct only exposes main-thread operations (animation,
 // composition, lifecycle dispatch). See window_proc.go for the boundary
 // protocol and its real-OS analogue.
+//
+// Canvas caching: canvasDirty is true when the canvas must be repainted via
+// app.Draw before the next composite. It is set true on construction (first
+// paint) and after every UpdateApp tick (app state may have changed). It is
+// cleared after updateCanvas runs. Draw reuses the last canvas without calling
+// updateCanvas while the flag is false.
 type Window struct {
-	app       *App
-	ctx       *windowContext
-	proc      *windowProc
-	canvas    draws.Image
-	lifecycle Lifecycle
-	clr       color.RGBA
-	iconPos   draws.XY
-	iconSize  draws.XY
-	screenW   float64
-	screenH   float64
-	anim      WindowAnim
-	mode      WindowMode
-	placement WindowPlacement
+	app         *App
+	ctx         *windowContext
+	proc        *windowProc
+	canvas      draws.Image
+	lifecycle   Lifecycle
+	clr         color.RGBA
+	iconPos     draws.XY
+	iconSize    draws.XY
+	screenW     float64
+	screenH     float64
+	anim        WindowAnim
+	mode        WindowMode
+	placement   WindowPlacement
+	canvasDirty bool // true = updateCanvas must run before next composite
 }
 
 // NewWindow creates a window, starts its goroutine, and waits for OnCreate
@@ -92,18 +99,19 @@ func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW
 	ctx := newWindowContext(ws, proc)
 	app := NewApp(appID, clr, ctx)
 	w := &Window{
-		app:       app,
-		ctx:       ctx,
-		proc:      proc,
-		canvas:    canvas,
-		lifecycle: LifecycleShowing,
-		clr:       clr,
-		iconPos:   iconPos,
-		iconSize:  iconSize,
-		screenW:   screenW,
-		screenH:   screenH,
-		mode:      WindowModeFullscreen,
-		placement: fullscreenPlacement(screenW, screenH),
+		app:         app,
+		ctx:         ctx,
+		proc:        proc,
+		canvas:      canvas,
+		lifecycle:   LifecycleShowing,
+		clr:         clr,
+		iconPos:     iconPos,
+		iconSize:    iconSize,
+		screenW:     screenW,
+		screenH:     screenH,
+		mode:        WindowModeFullscreen,
+		placement:   fullscreenPlacement(screenW, screenH),
+		canvasDirty: true, // paint the initial frame immediately
 	}
 	w.anim.OpenFrom(iconPos, iconSize, draws.XY{X: screenW, Y: screenH}, DurationOpening)
 
@@ -125,18 +133,19 @@ func NewRestoredWindow(state AppState, screenW, screenH float64, ws *WindowingSe
 	ctx := newWindowContext(ws, proc)
 	app := NewApp(state.ID, state.Color, ctx)
 	w := &Window{
-		app:       app,
-		ctx:       ctx,
-		proc:      proc,
-		canvas:    canvas,
-		lifecycle: LifecycleShown,
-		clr:       state.Color,
-		iconPos:   draws.XY{X: screenW / 2, Y: screenH / 2},
-		iconSize:  draws.XY{X: screenW, Y: screenH},
-		screenW:   screenW,
-		screenH:   screenH,
-		mode:      WindowModeFullscreen,
-		placement: fullscreenPlacement(screenW, screenH),
+		app:         app,
+		ctx:         ctx,
+		proc:        proc,
+		canvas:      canvas,
+		lifecycle:   LifecycleShown,
+		clr:         state.Color,
+		iconPos:     draws.XY{X: screenW / 2, Y: screenH / 2},
+		iconSize:    draws.XY{X: screenW, Y: screenH},
+		screenW:     screenW,
+		screenH:     screenH,
+		mode:        WindowModeFullscreen,
+		placement:   fullscreenPlacement(screenW, screenH),
+		canvasDirty: true, // paint the initial frame immediately
 	}
 	w.anim.SnapOpen(draws.XY{X: screenW, Y: screenH})
 
@@ -184,6 +193,9 @@ func (w *Window) Update() {
 		if w.anim.Done() {
 			w.lifecycle = LifecycleShown
 			w.proc.sendTick(tickMsg{kind: tickResume})
+			// OnResume may change visual state; mark canvas dirty so the
+			// first fully-open frame reflects it.
+			w.canvasDirty = true
 		}
 	case LifecycleHiding:
 		if w.anim.Done() {
@@ -195,9 +207,12 @@ func (w *Window) Update() {
 // UpdateApp routes the input frame to the goroutine and waits for the tick
 // to ack. Call only when lifecycle == LifecycleShown. After the ack the
 // server reads w.proc.shouldClose / drainLaunch() to handle command results.
+// It also marks the canvas dirty: the app's Update may have changed state
+// that Draw must reflect.
 func (w *Window) UpdateApp(frame mosapp.Frame) {
 	w.proc.sendTick(tickMsg{kind: tickUpdate, frame: frame})
-	w.proc.drain(w.ctx.ws)
+	w.proc.drain(w.ctx.ws, w)
+	w.canvasDirty = true
 }
 
 func (w *Window) updateCanvas() {
@@ -278,7 +293,15 @@ func (w *Window) Draw(dst draws.Image) {
 	if !w.lifecycle.Visible() {
 		return
 	}
-	w.updateCanvas()
+	// Canvas caching: only invoke app.Draw when state has changed since the
+	// last paint. The canvas retains its last content across frames where no
+	// tick ran (opening/closing animations, suppressed ticks). The compositor
+	// step below always runs because position and alpha may still be animating
+	// even when the content is unchanged.
+	if w.canvasDirty {
+		w.updateCanvas()
+		w.canvasDirty = false
+	}
 	s := draws.NewSprite(w.canvas)
 	s.Position = w.anim.Pos()
 	s.Size = w.anim.Size()

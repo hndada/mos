@@ -13,6 +13,7 @@ import (
 	"github.com/hndada/mos/internal/input"
 	"github.com/hndada/mos/internal/windowing"
 	"github.com/hndada/mos/ui"
+	uithem "github.com/hndada/mos/ui/theme"
 )
 
 const (
@@ -103,6 +104,21 @@ func groups() [displayModeCount]displayGroup {
 	}
 }
 
+// rotateSpec swaps the screen's w and h while keeping its visual center fixed.
+// Used to simulate device rotation: a portrait slot becomes a landscape slot
+// pivoting on its own midpoint.
+func rotateSpec(s screenSpec) screenSpec {
+	cx := s.x + s.w/2
+	cy := s.y + s.h/2
+	return screenSpec{
+		w:       s.h,
+		h:       s.w,
+		x:       cx - s.h/2,
+		y:       cy - s.w/2,
+		primary: s.primary,
+	}
+}
+
 func placeDisplayGroup(w, h float64) (float64, float64) {
 	centerX := func(width float64) float64 { return (simW - width) / 2 }
 	centerY := func(height float64) float64 { return (simH - height) / 2 }
@@ -187,6 +203,7 @@ func historyAspectSpec(mode displayMode, group displayGroup) screenSpec {
 type simulator struct {
 	mode              displayMode
 	activeDisplay     int
+	rotated           bool // landscape: active display's w/h swapped
 	groups            [displayModeCount]displayGroup
 	simGroup          simGroup
 	canvas            draws.Image // render target for the active display
@@ -209,8 +226,18 @@ type simulator struct {
 	recentsButtonText draws.Text
 	navGesture        ui.GestureDetector
 
+	// Sim-level action panel: one tappable button per supported action.
+	// Lives in raw viewport coords (not on the phone canvas) and operates
+	// regardless of display power, so users can power on with a click.
+	actionPanel ui.ControlPanel
+
 	// AOD renders a low-power clock when the display is "powered off."
 	aod *apps.DefaultAOD
+
+	// bus is the current OS-wide event bus (recreated on applyMode).
+	bus *event.Bus
+	// isDark tracks the current theme so the "Dark" action can toggle it.
+	isDark bool
 
 	// Per-frame input producers. Sim chrome buttons live in raw window-space;
 	// the nav-swipe lives in canvas-space. Each producer tracks its own
@@ -222,7 +249,7 @@ type simulator struct {
 	navInput input.Producer
 }
 
-const helpString = "P: Power   X: Lock   1/2/3: Bar-Flip-Fold   S: Screen   B/Esc: Back   N: Curtain   K: Keys   V: Ring   W: Split   I: PiP   G: Float   Tab: Focus   L/F: Log"
+const helpString = "P: Power   X: Lock   1/2/3: Bar-Flip-Fold   S: Screen   O: Rotate   B/Esc: Back   N: Curtain   K: Keys   V: Ring   W: Split   I: PiP   G: Float   Tab: Focus   L/F: Log"
 
 const (
 	controlPanelH = 38.0
@@ -304,7 +331,7 @@ func (l *simLog) Draw(dst draws.Image) {
 }
 
 func newSimulator() *simulator {
-	s := &simulator{}
+	s := &simulator{isDark: true} // theme.Dark() is active at startup
 	s.groups = groups()
 	s.activeDisplay = primaryIndex(s.groups[s.mode])
 
@@ -317,8 +344,59 @@ func newSimulator() *simulator {
 	s.log = newSimLog()
 	s.logf("simulator boot")
 
+	s.buildActionPanel()
 	s.applyMode()
 	return s
+}
+
+const actionPanelMargin = 12.0
+const actionPanelCols = 2
+
+// buildActionPanel constructs the right-side ui.ControlPanel listing every
+// supported simulator action. Each entry's handler is the same function the
+// matching keyboard shortcut invokes, so click and key paths stay in sync.
+func (s *simulator) buildActionPanel() {
+	actions := []ui.ControlAction{
+		{Label: "Power", Handler: s.togglePower},
+		{Label: "Lock", Handler: s.toggleLock},
+		{Label: "Bar", Handler: func() { s.setMode(displayModeBar) }},
+		{Label: "Flip", Handler: func() { s.setMode(displayModeFlip) }},
+		{Label: "Fold", Handler: func() { s.setMode(displayModeFold) }},
+		{Label: "Screen", Handler: s.cycleActiveDisplay},
+		{Label: "Rotate", Handler: s.rotateScreen},
+		{Label: "Back", Handler: func() { s.ws.GoBack() }},
+		{Label: "Home", Handler: func() { s.ws.GoHome() }},
+		{Label: "Recents", Handler: func() { s.ws.GoRecents() }},
+		{Label: "Curtain", Handler: func() { s.ws.ToggleCurtain() }},
+		{Label: "Keys", Handler: func() { s.ws.ToggleKeyboard() }},
+		{Label: "Ring", Handler: func() { s.ws.ReceiveCall() }},
+		{Label: "Shot", Handler: s.requestScreenshot},
+		{Label: "Split", Handler: func() { s.ws.EnterSplit() }},
+		{Label: "PiP", Handler: func() { s.ws.EnterPip() }},
+		{Label: "Float", Handler: func() { s.ws.EnterFreeform() }},
+		{Label: "Focus", Handler: func() { s.ws.CycleFocus() }},
+		// "Dark" toggles between dark and light themes by publishing a
+		// TopicDarkMode event — the same path that the Settings toggle uses.
+		{Label: "Dark", Handler: func() {
+			if s.bus != nil {
+				s.bus.Publish(event.System{
+					Topic: event.TopicDarkMode,
+					Value: !s.isDark,
+				})
+			}
+		}},
+		{Label: "Log", Handler: s.toggleLog},
+		{Label: "Clear", Handler: s.clearLog},
+	}
+
+	// Anchor the panel flush with the right viewport edge. We only need its
+	// width to do that; the panel itself derives its full footprint internally.
+	panelW := ui.ControlPanelButtonW*float64(actionPanelCols) +
+		ui.ControlPanelGap*float64(actionPanelCols-1) + ui.ControlPanelPad*2
+	x := simW - panelW - actionPanelMargin
+	y := actionPanelMargin
+
+	s.actionPanel = ui.NewControlPanel(x, y, actionPanelCols, actions)
 }
 
 func (s *simulator) logf(format string, args ...any) {
@@ -339,7 +417,7 @@ func (s *simulator) applyMode() {
 	// Tear down the old server's per-window goroutines so they don't leak.
 	s.ws.Shutdown()
 
-	group := s.groups[s.mode]
+	group := s.effectiveGroup()
 	if s.activeDisplay >= len(group) {
 		s.activeDisplay = primaryIndex(group)
 	}
@@ -347,7 +425,28 @@ func (s *simulator) applyMode() {
 
 	s.canvas = draws.CreateImage(active.w, active.h)
 	bus := event.NewBus()
+	s.bus = bus
 	s.ws = windowing.WindowingServer{ScreenW: active.w, ScreenH: active.h, Bus: bus}
+
+	// Subscribe to the dark-mode system event so that the Settings toggle and
+	// the simulator action panel both funnel through the same path.
+	bus.Subscribe(event.KindSystem, func(e event.Event) {
+		sys, ok := e.(event.System)
+		if !ok || sys.Topic != event.TopicDarkMode {
+			return
+		}
+		dark, ok := sys.Value.(bool)
+		if !ok {
+			return
+		}
+		s.isDark = dark
+		if dark {
+			uithem.Set(uithem.Dark())
+		} else {
+			uithem.Set(uithem.Light())
+		}
+		s.ws.InvalidateAll()
+	})
 	s.ws.SetLogger(s.logLine)
 	s.ws.SetScreenshots(s.screenshots)
 	s.ws.SetWallpaper(apps.NewDefaultWallpaper(active.w, active.h))
@@ -452,6 +551,7 @@ func (s *simulator) setMode(m displayMode) {
 	s.logf("mode change %s -> %s", s.mode.String(), m.String())
 	s.mode = m
 	s.activeDisplay = primaryIndex(s.groups[s.mode])
+	s.rotated = false
 	s.applyMode()
 }
 
@@ -462,7 +562,38 @@ func (s *simulator) cycleActiveDisplay() {
 		return
 	}
 	s.activeDisplay = (s.activeDisplay + 1) % len(group)
+	s.rotated = false
 	s.logf("active display -> %d", s.activeDisplay)
+	s.applyMode()
+}
+
+// effectiveGroup returns the active mode's display group with rotation applied
+// to the active display when s.rotated is true. The original groups slice is
+// not mutated, so toggling rotation off restores the natural layout.
+func (s *simulator) effectiveGroup() displayGroup {
+	group := s.groups[s.mode]
+	if !s.rotated {
+		return group
+	}
+	out := make(displayGroup, len(group))
+	copy(out, group)
+	idx := s.activeDisplay
+	if idx >= len(out) {
+		idx = primaryIndex(out)
+	}
+	out[idx] = rotateSpec(out[idx])
+	return out
+}
+
+// rotateScreen toggles the active display between portrait and landscape and
+// rebuilds the windowing server (which preserves the active app and history).
+func (s *simulator) rotateScreen() {
+	s.rotated = !s.rotated
+	if s.rotated {
+		s.logf("rotate -> landscape")
+	} else {
+		s.logf("rotate -> portrait")
+	}
 	s.applyMode()
 }
 
@@ -470,25 +601,43 @@ func (s *simulator) toggleLog() {
 	s.log.Toggle()
 }
 
+func (s *simulator) clearLog() {
+	s.log.Clear()
+}
+
+// togglePower flips display power. A power-off→on transition auto-locks the
+// screen, mirroring real phone behaviour.
+func (s *simulator) togglePower() {
+	before := s.display.Powered()
+	s.display.SetPowered(!before)
+	s.logf("power=%v", s.display.Powered())
+	if !before && s.display.Powered() {
+		s.ws.Lock()
+	}
+}
+
+func (s *simulator) toggleLock() {
+	if s.ws.IsLocked() {
+		s.ws.Unlock()
+	} else {
+		s.ws.Lock()
+	}
+}
+
+func (s *simulator) requestScreenshot() {
+	s.captureNext = true
+	s.logf("screenshot requested")
+}
+
 func (s *simulator) Update() error {
 	rawX, rawY := ebiten.CursorPosition()
 	rawCursor := draws.XY{X: float64(rawX), Y: float64(rawY)}
 
 	if input.IsKeyJustPressed(input.KeyP) {
-		before := s.display.Powered()
-		s.display.SetPowered(!before)
-		s.logf("power=%v", s.display.Powered())
-		// Power off → on auto-locks the screen, mirroring real phone behaviour.
-		if !before && s.display.Powered() {
-			s.ws.Lock()
-		}
+		s.togglePower()
 	}
 	if input.IsKeyJustPressed(input.KeyX) {
-		if s.ws.IsLocked() {
-			s.ws.Unlock()
-		} else {
-			s.ws.Lock()
-		}
+		s.toggleLock()
 	}
 	if input.IsKeyJustPressed(input.KeyDigit1) {
 		s.setMode(displayModeBar)
@@ -502,15 +651,17 @@ func (s *simulator) Update() error {
 	if input.IsKeyJustPressed(input.KeyS) {
 		s.cycleActiveDisplay()
 	}
+	if input.IsKeyJustPressed(input.KeyO) {
+		s.rotateScreen()
+	}
 	if input.IsKeyJustPressed(input.KeyL) {
 		s.toggleLog()
 	}
 	if input.IsKeyJustPressed(input.KeyF) {
-		s.log.Clear()
+		s.clearLog()
 	}
 	if input.IsKeyJustPressed(input.KeyC) || input.IsKeyJustPressed(input.KeyPrintScreen) {
-		s.captureNext = true
-		s.logf("screenshot requested")
+		s.requestScreenshot()
 	}
 	if input.IsKeyJustPressed(input.KeyB) || input.IsKeyJustPressed(input.KeyEscape) || input.IsKeyJustPressed(input.KeyBackspace) {
 		s.ws.GoBack()
@@ -547,11 +698,15 @@ func (s *simulator) Update() error {
 		s.aod.Update()
 	}
 
+	// Sim action panel runs in raw viewport coords and dispatches regardless
+	// of display power, so a click on Power can wake the screen.
+	rawFrame := mosapp.Frame{Cursor: rawCursor, Events: s.rawInput.Poll()}
+	s.actionPanel.Update(rawFrame)
+
 	if s.display.Powered() {
 		active := s.groups[s.mode][s.activeDisplay]
 
-		// Chrome buttons run in raw window coords (offset is still 0 here).
-		rawFrame := mosapp.Frame{Cursor: rawCursor, Events: s.rawInput.Poll()}
+		// On-screen nav buttons share rawFrame with the action panel.
 		if s.backButton.Update(rawFrame) {
 			s.ws.GoBack()
 		}
@@ -623,6 +778,8 @@ func (s *simulator) drawTriggers(dst draws.Image) {
 	s.backButtonText.Draw(dst)
 	s.homeButtonText.Draw(dst)
 	s.recentsButtonText.Draw(dst)
+
+	s.actionPanel.Draw(dst)
 }
 
 func (s *simulator) Layout(_, _ int) (int, int) { return simW, simH }

@@ -7,6 +7,7 @@ import (
 	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/tween"
+	"github.com/hndada/mos/ui/theme"
 )
 
 const (
@@ -17,12 +18,14 @@ const (
 )
 
 // Toggle is an on/off switch. Position is the top-left corner in caller coordinates.
+// The track and knob colours are read from the active theme at draw time, so a
+// theme switch is reflected on the very next frame without reconstructing the widget.
 type Toggle struct {
 	gesture  GestureDetector
 	Value    bool
-	trackOff draws.Sprite
-	trackOn  draws.Sprite
-	knob     draws.Sprite
+	trackOff draws.Sprite // white image; tinted by theme.SurfaceWidget at draw time
+	trackOn  draws.Sprite // white image; tinted by theme.AccentSuccess at draw time
+	knob     draws.Sprite // white circle; tinted by theme.Knob at draw time
 	knobX    tween.Transition
 	onAlpha  tween.Transition
 	x, y     float64
@@ -31,17 +34,19 @@ type Toggle struct {
 func NewToggle(x, y float64, val bool) Toggle {
 	kSize := ToggleH - 4
 
+	// Create white images; colours are applied via ColorScale in Draw so that
+	// a runtime theme change is reflected without rebuilding the widget.
 	offImg := draws.CreateImage(ToggleW, ToggleH)
-	offImg.Fill(color.RGBA{72, 72, 74, 255})
+	offImg.Fill(color.White)
 	offSp := draws.NewSprite(offImg)
 	offSp.Locate(x, y, draws.LeftTop)
 
 	onImg := draws.CreateImage(ToggleW, ToggleH)
-	onImg.Fill(color.RGBA{52, 199, 89, 255})
+	onImg.Fill(color.White)
 	onSp := draws.NewSprite(onImg)
 	onSp.Locate(x, y, draws.LeftTop)
 
-	knobSp := newCircleSprite(kSize, color.RGBA{255, 255, 255, 255})
+	knobSp := newCircleSprite(kSize, color.White)
 
 	t := Toggle{
 		gesture:  NewGestureDetector(x, y, ToggleW, ToggleH),
@@ -90,9 +95,19 @@ func (t *Toggle) Update(frame mosapp.Frame) bool {
 }
 
 func (t Toggle) Draw(dst draws.Image) {
-	t.trackOff.Draw(dst)
+	// Off track — tinted with the SurfaceWidget theme colour.
+	off := t.trackOff
+	off.ColorScale.Scale(theme.ScaleOf(theme.Active().Color(theme.SurfaceWidget)))
+	off.Draw(dst)
+
+	// On track — tinted with AccentSuccess; faded by onAlpha during animation.
 	on := t.trackOn
+	on.ColorScale.Scale(theme.ScaleOf(theme.Active().Color(theme.AccentSuccess)))
 	on.ColorScale.ScaleAlpha(float32(t.onAlpha.Value()))
 	on.Draw(dst)
-	t.knob.Draw(dst)
+
+	// Knob — tinted with the Knob theme colour.
+	knob := t.knob
+	knob.ColorScale.Scale(theme.ScaleOf(theme.Active().Color(theme.Knob)))
+	knob.Draw(dst)
 }

@@ -37,6 +37,10 @@ type ListTile struct {
 	subtitleEl draws.Text
 	trailEl    draws.Text
 
+	// hlSprite is the press-highlight background, pre-allocated in
+	// NewListTile so Draw never calls draws.CreateImage on the hot path.
+	hlSprite draws.Sprite
+
 	x, y, w float64
 }
 
@@ -56,6 +60,13 @@ func NewListTile(x, y, w float64, title, subtitle string) ListTile {
 	trailEl := draws.NewText("")
 	trailEl.SetFace(trailOpts)
 
+	// Pre-allocate the press-highlight sprite once. Draw reuses it every
+	// frame so the hot path never touches draws.CreateImage / ebiten.NewImage.
+	hlImg := draws.CreateImage(w, ListTileH)
+	hlImg.Fill(color.RGBA{255, 255, 255, 18})
+	hlSp := draws.NewSprite(hlImg)
+	hlSp.Locate(x, y, draws.LeftTop)
+
 	t := ListTile{
 		Title:      title,
 		Subtitle:   subtitle,
@@ -63,6 +74,7 @@ func NewListTile(x, y, w float64, title, subtitle string) ListTile {
 		titleEl:    titleEl,
 		subtitleEl: subEl,
 		trailEl:    trailEl,
+		hlSprite:   hlSp,
 		x:          x,
 		y:          y,
 		w:          w,
@@ -79,6 +91,7 @@ func (t *ListTile) SetY(y float64) {
 	}
 	t.y = y
 	t.gesture.Area.Locate(t.x, y, draws.LeftTop)
+	t.hlSprite.Position.Y = y
 	t.layout()
 }
 
@@ -99,13 +112,9 @@ func (t *ListTile) Update(frame mosapp.Frame) bool {
 }
 
 func (t *ListTile) Draw(dst draws.Image) {
-	// Press highlight.
+	// Press highlight — uses the pre-allocated sprite; no image allocation.
 	if t.gesture.IsHeld() {
-		hl := draws.CreateImage(t.w, ListTileH)
-		hl.Fill(color.RGBA{255, 255, 255, 18})
-		hlSp := draws.NewSprite(hl)
-		hlSp.Locate(t.x, t.y, draws.LeftTop)
-		hlSp.Draw(dst)
+		t.hlSprite.Draw(dst)
 	}
 
 	t.titleEl.Text = t.Title

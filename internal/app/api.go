@@ -98,6 +98,41 @@ type Context interface {
 	// PostNotice sends a notice to the curtain / notification centre.
 	PostNotice(n Notice)
 
+	// Invalidate schedules a content redraw for the next frame. Call this when
+	// the app changes visual state outside of an Update tick — for example from
+	// a background goroutine, a timer callback, or an event-bus handler.
+	//
+	// Apps whose animated widgets (toggles, sliders, etc.) continue animating
+	// beyond the input event that triggered them should also call Invalidate
+	// from Update while the animation is still in-flight, so the windowing
+	// server keeps delivering ticks and the canvas stays live.
+	//
+	// It is safe to call from any goroutine. Calling Invalidate on a window
+	// that is not currently Shown is a no-op.
+	Invalidate()
+
+	// RequestFocus asks the windowing server to give keyboard and IME focus to
+	// this app's window. Call this when a text field or other keyboard-driven
+	// widget receives a tap. The server serialises focus changes and notifies
+	// the previous holder via HasFocus() becoming false.
+	//
+	// In single-window (fullscreen) mode the active window always holds focus;
+	// an explicit RequestFocus is only meaningful in split or freeform layouts
+	// where multiple windows compete for keyboard input.
+	RequestFocus()
+
+	// ReleaseFocus voluntarily gives up keyboard and IME focus. The windowing
+	// server clears the focus slot; future keyboard events are unrouted until
+	// another window calls RequestFocus.
+	ReleaseFocus()
+
+	// HasFocus reports whether this window currently holds keyboard focus.
+	// Read this before routing physical keyboard events to text fields so that
+	// a background window does not "steal" characters from the focused one.
+	//
+	// Thread-safe: may be called from any goroutine.
+	HasFocus() bool
+
 	// Screenshots returns the list of in-memory screenshots captured by the user,
 	// newest last. Primarily used by the Gallery app.
 	Screenshots() []draws.Image

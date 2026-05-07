@@ -25,8 +25,19 @@ type CmdHideKeyboard struct{}
 // CmdPostNotice posts a notice to the curtain / notification centre.
 type CmdPostNotice struct{ Notice mosapp.Notice }
 
+// CmdRequestFocus asks the windowing server to grant keyboard/IME focus to
+// the sending window. The server serialises focus; the previous holder's
+// ctx.HasFocus() becomes false atomically before the new holder's becomes true.
+type CmdRequestFocus struct{}
+
+// CmdReleaseFocus voluntarily surrenders keyboard/IME focus. If the sending
+// window does not currently hold focus the command is a no-op.
+type CmdReleaseFocus struct{}
+
 func (CmdFinish) appCommand()       {}
 func (CmdLaunch) appCommand()       {}
 func (CmdShowKeyboard) appCommand() {}
 func (CmdHideKeyboard) appCommand() {}
 func (CmdPostNotice) appCommand()   {}
+func (CmdRequestFocus) appCommand() {}
+func (CmdReleaseFocus) appCommand() {}

@@ -5,21 +5,23 @@ import (
 	"math"
 
 	"github.com/hndada/mos/internal/draws"
+	"github.com/hndada/mos/ui/theme"
 )
 
 // ── Colour palette ────────────────────────────────────────────────────────────
+//
+// Each function reads from the active theme so that a theme switch (e.g.
+// dark→light) is reflected on the very next frame without any explicit refresh.
 
-var (
-	colText     = color.RGBA{235, 237, 240, 255}
-	colMuted    = color.RGBA{140, 145, 158, 255}
-	colBtnBg    = color.RGBA{50, 55, 65, 255}
-	colBtnPress = color.RGBA{72, 80, 98, 255}
-	colAccent   = color.RGBA{52, 132, 220, 255}
-	colDivider  = color.RGBA{55, 60, 70, 255}
-	colTrackOff = color.RGBA{80, 85, 95, 255}
-	colTileHold = color.RGBA{255, 255, 255, 18}
-	colBarTrack = color.RGBA{60, 65, 75, 255}
-)
+func colText() color.RGBA     { return theme.Active().Color(theme.TextPrimary) }
+func colMuted() color.RGBA    { return theme.Active().Color(theme.TextSecondary) }
+func colBtnBg() color.RGBA    { return theme.Active().Color(theme.SurfaceWidget) }
+func colBtnPress() color.RGBA { return theme.Active().Color(theme.SurfaceTint) }
+func colAccent() color.RGBA   { return theme.Active().Color(theme.Accent) }
+func colDivider() color.RGBA  { return theme.Active().Color(theme.Divider) }
+func colTrackOff() color.RGBA { return theme.Active().Color(theme.SurfaceWidget) }
+func colTileHold() color.RGBA { return theme.Active().Color(theme.PressOverlay) }
+func colBarTrack() color.RGBA { return theme.Active().Color(theme.SurfaceWidget) }
 
 // ── Label ─────────────────────────────────────────────────────────────────────
 
@@ -28,50 +30,62 @@ var (
 //	comp.Label("Hello", comp.FontSize(18), comp.Bold())
 //	comp.Label("hint", comp.Muted(), comp.FontSize(12))
 func Label(text string, opts ...LabelOpt) Node {
-	lw := &labelW{text: text, size: 14, clr: colText}
+	lw := &labelW{text: text, size: 14, clr: colText()}
 	for _, o := range opts {
 		o(lw)
 	}
 	return Node{w: lw}
 }
 
+// labelW is the Widget behind Label(). It memoizes the draws.Text it builds
+// so that layout's two-pass measure→place cycle only calls draws.NewText once
+// per label per frame rather than twice.
 type labelW struct {
-	text string
-	size float64
-	clr  color.RGBA
+	text  string
+	size  float64
+	clr   color.RGBA
+	built bool       // true after first textEl() call within this frame build
+	el    draws.Text // memoized result; valid when built == true
 }
 
 // LabelOpt is a functional option for Label.
 type LabelOpt func(*labelW)
 
-func FontSize(s float64) LabelOpt    { return func(lw *labelW) { lw.size = s } }
+func FontSize(s float64) LabelOpt     { return func(lw *labelW) { lw.size = s } }
 func FontColor(c color.RGBA) LabelOpt { return func(lw *labelW) { lw.clr = c } }
-func Muted() LabelOpt                { return func(lw *labelW) { lw.clr = colMuted } }
+func Muted() LabelOpt                 { return func(lw *labelW) { lw.clr = colMuted() } }
 
-func (lw *labelW) makeText() draws.Text {
-	opts := draws.NewFaceOptions()
-	opts.Size = lw.size
-	t := draws.NewText(lw.text)
-	t.SetFace(opts)
-	return t
+// textEl returns the memoized draws.Text, building it on the first call.
+// Subsequent calls within the same frame build return the cached object,
+// saving one draws.NewText / LoadFace / text.Measure round-trip.
+func (lw *labelW) textEl() draws.Text {
+	if !lw.built {
+		opts := draws.NewFaceOptions()
+		opts.Size = lw.size
+		lw.el = draws.NewText(lw.text)
+		lw.el.SetFace(opts)
+		lw.built = true
+	}
+	return lw.el
 }
 
 func (lw *labelW) measure(_, _ float64) (float64, float64) {
-	sz := lw.makeText().Size()
+	// Box.Size was pre-computed by SetFace; no extra text.Measure call needed.
+	sz := lw.textEl().Box.Size
 	return sz.X, sz.Y
 }
 
 func (lw *labelW) place(r Rect, path string) *placed {
-	t := lw.makeText()
-	clr := lw.clr
+	t := lw.textEl()
+	clr := lw.clr // snapshot theme colour at layout time (comp rebuilds each frame)
 	return &placed{
 		rect: r,
 		path: path,
 		drawFn: func(dst draws.Image, _ IA) {
 			tt := t
 			tt.Locate(r.X, r.Y+r.H/2, draws.LeftMiddle)
-			// tint not supported directly on Text color scale; use the stored color
-			_ = clr
+			cr, cg, cb, ca := theme.ScaleOf(clr)
+			tt.ColorScale.Scale(cr, cg, cb, ca)
 			tt.Draw(dst)
 		},
 	}
@@ -112,7 +126,7 @@ func (d *dividerW) place(r Rect, path string) *placed {
 		rect: r,
 		path: path,
 		drawFn: func(dst draws.Image, _ IA) {
-			fillRect(dst, Rect{r.X, r.Y, r.W, 1}, colDivider)
+			fillRect(dst, Rect{r.X, r.Y, r.W, 1}, colDivider())
 		},
 	}
 }
@@ -132,11 +146,16 @@ func Btn(label string, onTap func(), opts ...BtnOpt) Node {
 	return Node{w: bw}
 }
 
+// btnW is the Widget behind Btn(). Like labelW it memoizes its draws.Text
+// so the measure→place two-pass layout only allocates once per button per frame.
 type btnW struct {
-	label string
-	onTap func()
-	h     float64
-	full  bool // expand to full width
+	label  string
+	onTap  func()
+	h      float64
+	full   bool // expand to full width
+	accent bool // use Accent colour as background
+	built  bool
+	el     draws.Text
 }
 
 // BtnOpt is a functional option for Btn.
@@ -148,12 +167,23 @@ func BtnH(h float64) BtnOpt { return func(b *btnW) { b.h = h } }
 // BtnFull makes the button expand to the full available width.
 func BtnFull() BtnOpt { return func(b *btnW) { b.full = true } }
 
+// BtnAccent styles the button with the theme Accent colour as its background
+// and OnAccent as its text colour (e.g. a primary call-to-action button).
+func BtnAccent() BtnOpt { return func(b *btnW) { b.accent = true } }
+
+func (b *btnW) textEl() draws.Text {
+	if !b.built {
+		opts := draws.NewFaceOptions()
+		opts.Size = 15
+		b.el = draws.NewText(b.label)
+		b.el.SetFace(opts)
+		b.built = true
+	}
+	return b.el
+}
+
 func (b *btnW) measure(maxW, _ float64) (float64, float64) {
-	opts := draws.NewFaceOptions()
-	opts.Size = 15
-	t := draws.NewText(b.label)
-	t.SetFace(opts)
-	tw := t.Size().X + 32
+	tw := b.textEl().Box.Size.X + 32
 	if b.full || tw > maxW {
 		tw = maxW
 	}
@@ -161,23 +191,36 @@ func (b *btnW) measure(maxW, _ float64) (float64, float64) {
 }
 
 func (b *btnW) place(r Rect, path string) *placed {
-	opts := draws.NewFaceOptions()
-	opts.Size = 15
-	t := draws.NewText(b.label)
-	t.SetFace(opts)
+	t := b.textEl()
 	onTap := b.onTap
+	accent := b.accent
 	return &placed{
 		rect:    r,
 		path:    path,
 		onClick: onTap,
 		drawFn: func(dst draws.Image, ia IA) {
-			bg := colBtnBg
-			if ia.Pressed {
-				bg = colBtnPress
+			var bg color.RGBA
+			if accent {
+				bg = colAccent()
+				if ia.Pressed {
+					// Darken the accent slightly on press.
+					bg.R = uint8(float32(bg.R) * 0.82)
+					bg.G = uint8(float32(bg.G) * 0.82)
+					bg.B = uint8(float32(bg.B) * 0.82)
+				}
+			} else {
+				bg = colBtnBg()
+				if ia.Pressed {
+					bg = colBtnPress()
+				}
 			}
 			fillRect(dst, r, bg)
 			tt := t
 			tt.Locate(r.X+r.W/2, r.Y+r.H/2, draws.CenterMiddle)
+			if accent {
+				cr, cg, cb, ca := theme.ScaleOf(theme.Active().Color(theme.OnAccent))
+				tt.ColorScale.Scale(cr, cg, cb, ca)
+			}
 			tt.Draw(dst)
 		},
 	}
@@ -218,9 +261,9 @@ func (t *toggleW) place(r Rect, path string) *placed {
 		drawFn: func(dst draws.Image, ia IA) {
 			on := *val
 			// Track
-			track := colTrackOff
+			track := colTrackOff()
 			if on {
-				track = colAccent
+				track = colAccent()
 			}
 			fillRect(dst, r, track)
 			// Knob
@@ -234,7 +277,7 @@ func (t *toggleW) place(r Rect, path string) *placed {
 				kSize -= 2
 				kX += 1
 			}
-			fillRect(dst, Rect{kX, r.Y + 2, kSize, kSize}, color.RGBA{255, 255, 255, 235})
+			fillRect(dst, Rect{kX, r.Y + 2, kSize, kSize}, theme.Active().Color(theme.Knob))
 		},
 	}
 }
@@ -323,7 +366,7 @@ func (lt *listTileW) place(r Rect, path string) *placed {
 		children: []*placed{inner},
 		drawFn: func(dst draws.Image, ia IA) {
 			if ia.Pressed {
-				fillRect(dst, r, colTileHold)
+				fillRect(dst, r, colTileHold())
 			}
 		},
 	}
@@ -335,7 +378,7 @@ func (lt *listTileW) place(r Rect, path string) *placed {
 //
 //	comp.ProgressBar(app.loadProgress)
 func ProgressBar(value float64, opts ...ProgressOpt) Node {
-	po := &progressOpts{h: 6, clr: colAccent}
+	po := &progressOpts{h: 6, clr: colAccent()}
 	for _, o := range opts {
 		o(po)
 	}
@@ -369,7 +412,7 @@ func (pw *progressW) place(r Rect, path string) *placed {
 		rect: r,
 		path: path,
 		drawFn: func(dst draws.Image, _ IA) {
-			fillRect(dst, r, colBarTrack)
+			fillRect(dst, r, colBarTrack())
 			fillRect(dst, Rect{r.X, r.Y, r.W * v, r.H}, clr)
 		},
 	}
