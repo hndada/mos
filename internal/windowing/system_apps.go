@@ -67,6 +67,10 @@ type Curtain interface {
 	// frosted-glass backdrop. Implementations that do not use blur may
 	// ignore the argument.
 	SetBackground(bg draws.Image)
+	// AddNotice appends a notice posted via Context.PostNotice to the
+	// curtain's notification list. Implementations decide where and how
+	// to render it; the windowing server simply forwards the message.
+	AddNotice(n mosapp.Notice)
 	Draw(dst draws.Image)
 }
 

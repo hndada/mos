@@ -129,11 +129,12 @@ func (p *windowProc) run(content mosapp.Content, ctx *windowContext) {
 	}
 }
 
-// drain consumes all queued commands from the goroutine and dispatches
-// them. Side-effects on the windowing server (ShowKeyboard, log) happen
-// inline; commands that need windowing decisions (Finish, Launch) update
-// fields the server reads after this call.
-func (p *windowProc) drain(ws *WindowingServer) {
+// drain consumes all queued commands from the goroutine and dispatches them.
+// w is the Window that owns this proc; it is needed to route focus commands
+// back to the correct window. Side-effects on the windowing server
+// (ShowKeyboard, focus, log) happen inline; commands that need windowing
+// decisions (Finish, Launch) update fields the server reads after this call.
+func (p *windowProc) drain(ws *WindowingServer, w *Window) {
 	for {
 		select {
 		case cmd := <-p.cmdCh:
@@ -147,8 +148,13 @@ func (p *windowProc) drain(ws *WindowingServer) {
 			case CmdHideKeyboard:
 				ws.HideKeyboard()
 			case CmdPostNotice:
-				ws.log("notice: " + c.Notice.Title + " — " + c.Notice.Body)
-				// TODO: enqueue into the curtain notice list
+				ws.PostNotice(c.Notice)
+			case CmdRequestFocus:
+				ws.grantFocus(w)
+			case CmdReleaseFocus:
+				ws.releaseFocus(w)
+			default:
+				_ = c
 			}
 		default:
 			return

@@ -7,6 +7,7 @@ import (
 	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/input"
+	"github.com/hndada/mos/ui/theme"
 )
 
 const (
@@ -16,27 +17,30 @@ const (
 
 // Slider is a horizontal drag control with Value in [0, 1].
 // Position is the left edge of the track, vertically centred at y.
+// Track and thumb colours are read from the active theme at draw time.
 type Slider struct {
 	Value    float64
-	track    draws.Sprite
-	filled   draws.Sprite
-	thumb    draws.Sprite
+	track    draws.Sprite // white image; tinted by theme.SurfaceWidget at draw time
+	filled   draws.Sprite // white image; tinted by theme.Accent at draw time
+	thumb    draws.Sprite // white circle; tinted by theme.Knob at draw time
 	x, y, w  float64
 	dragging bool
 }
 
 func NewSlider(x, y, w, val float64) Slider {
+	// Create white images; colours are applied via ColorScale in Draw so that a
+	// runtime theme change is reflected without rebuilding the widget.
 	trackImg := draws.CreateImage(w, SliderTrackH)
-	trackImg.Fill(color.RGBA{72, 72, 74, 255})
+	trackImg.Fill(color.White)
 	trackSp := draws.NewSprite(trackImg)
 	trackSp.Locate(x, y-SliderTrackH/2, draws.LeftTop)
 
 	filledImg := draws.CreateImage(w, SliderTrackH)
-	filledImg.Fill(color.RGBA{10, 132, 255, 255})
+	filledImg.Fill(color.White)
 	filledSp := draws.NewSprite(filledImg)
 	filledSp.Locate(x, y-SliderTrackH/2, draws.LeftTop)
 
-	thumbSp := newCircleSprite(SliderThumbR*2, color.RGBA{255, 255, 255, 255})
+	thumbSp := newCircleSprite(SliderThumbR*2, color.White)
 
 	s := Slider{
 		Value:  clamp01(val),
@@ -78,20 +82,27 @@ func (s *Slider) Update(frame mosapp.Frame) {
 }
 
 func (s Slider) Draw(dst draws.Image) {
-	s.track.Draw(dst)
+	// Track — tinted with the SurfaceWidget theme colour.
+	track := s.track
+	track.ColorScale.Scale(theme.ScaleOf(theme.Active().Color(theme.SurfaceWidget)))
+	track.Draw(dst)
 
+	// Filled portion — tinted with the Accent theme colour; clipped to Value.
 	if s.Value > 0 {
-		f := s.filled
-		f.Size.X = s.Value * s.w
-		f.Draw(dst)
+		filled := s.filled
+		filled.ColorScale.Scale(theme.ScaleOf(theme.Active().Color(theme.Accent)))
+		filled.Size.X = s.Value * s.w
+		filled.Draw(dst)
 	}
 
-	th := s.thumb
-	th.Position = draws.XY{
+	// Thumb — tinted with the Knob theme colour.
+	thumb := s.thumb
+	thumb.ColorScale.Scale(theme.ScaleOf(theme.Active().Color(theme.Knob)))
+	thumb.Position = draws.XY{
 		X: s.thumbCX() - SliderThumbR,
 		Y: s.y - SliderThumbR,
 	}
-	th.Draw(dst)
+	thumb.Draw(dst)
 }
 
 func clamp01(v float64) float64 { return min(max(v, 0.0), 1.0) }

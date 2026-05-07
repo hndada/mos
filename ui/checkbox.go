@@ -5,6 +5,7 @@ import (
 
 	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
+	"github.com/hndada/mos/ui/theme"
 )
 
 const (
@@ -36,11 +37,14 @@ type Checkbox struct {
 }
 
 func NewCheckbox(x, y float64, label string, val bool) Checkbox {
+	// Colours are sampled from the active theme at construction time. Rebuild
+	// the widget (or call NewCheckbox again) after a theme switch to pick up
+	// the new palette.
 	off := draws.CreateImage(checkboxSize, checkboxSize)
-	off.Fill(color.RGBA{72, 72, 74, 255})
+	off.Fill(theme.Active().Color(theme.SurfaceWidget))
 
 	on := draws.CreateImage(checkboxSize, checkboxSize)
-	on.Fill(color.RGBA{10, 132, 255, 255})
+	on.Fill(theme.Active().Color(theme.Accent))
 	// Draw a simple tick "✓" as a text element baked into the image.
 	tick := draws.NewText("✓")
 	tickOpts := draws.NewFaceOptions()
@@ -117,20 +121,21 @@ func NewRadioGroup(x, y float64, options []string, selected int) RadioGroup {
 	for i, opt := range options {
 		iy := y + float64(i)*radioItemH
 
-		// Outer ring (off state).
+		// Outer ring (off state). Colours come from the active theme at
+		// construction time; rebuild after a theme switch to update.
 		off := draws.CreateImage(radioSize, radioSize)
-		off.Fill(color.RGBA{72, 72, 74, 255})
+		off.Fill(theme.Active().Color(theme.SurfaceWidget))
 		inner := draws.CreateImage(radioSize-4, radioSize-4)
-		inner.Fill(color.RGBA{28, 28, 32, 255}) // hollow centre
+		inner.Fill(theme.Active().Color(theme.Background)) // hollow centre
 		innerSp := draws.NewSprite(inner)
 		innerSp.Locate(radioSize/2, radioSize/2, draws.CenterMiddle)
 		innerSp.Draw(off)
 
 		// Filled (on state).
 		on := draws.CreateImage(radioSize, radioSize)
-		on.Fill(color.RGBA{10, 132, 255, 255})
+		on.Fill(theme.Active().Color(theme.Accent))
 		dot := draws.CreateImage(radioSize-8, radioSize-8)
-		dot.Fill(color.RGBA{255, 255, 255, 255})
+		dot.Fill(color.White)
 		dotSp := draws.NewSprite(dot)
 		dotSp.Locate(radioSize/2, radioSize/2, draws.CenterMiddle)
 		dotSp.Draw(on)

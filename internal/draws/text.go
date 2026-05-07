@@ -59,6 +59,13 @@ func NewFaceOptions() FaceOptions {
 }
 
 func LoadFace(opts FaceOptions) {
+	// Fast path: face already cached — avoid re-allocating the GoTextFace
+	// struct on every NewText / SetFace call (which previously happened even
+	// when the same (font, size, hinting) triple was already registered).
+	if _, ok := cachedFaces[opts]; ok {
+		return
+	}
+
 	src, ok := cachedFaceSources[opts.Font]
 	if !ok {
 		src = cachedFaceSources["goregular"]

@@ -45,10 +45,16 @@ type WindowingServer struct {
 	inputProducer input.Producer
 
 	// Multi-window state. mwm is nil when all windows are fullscreen.
-	// focusedWindow is the window that receives keyboard/touch input in
-	// split and freeform modes; in fullscreen mode activeWindow() is used.
+	// focusedWindow is the window that receives pointer/touch input in split
+	// and freeform modes; in fullscreen mode activeWindow() is used.
 	mwm           *multiWindowManager
 	focusedWindow *Window
+
+	// keyboardFocus is the window that holds keyboard and IME focus. It is
+	// managed independently from focusedWindow so that in PiP mode the small
+	// overlay window can hold focus while the main window receives pointer
+	// events. In fullscreen mode it always equals the active window.
+	keyboardFocus *Window
 
 	// Blur infrastructure for frosted-glass overlays (curtain, etc.).
 	// blurSnap holds a copy of the scene before translucent layers are drawn;
@@ -125,6 +131,44 @@ func (ws *WindowingServer) Unlock() {
 
 func (ws *WindowingServer) IsLocked() bool {
 	return ws.lock != nil && ws.lock.IsLocked()
+}
+
+// PostNotice delivers a notice posted by an app to the curtain's notification
+// list. Called on the main goroutine after the producing window's tick has
+// acked, so it is safe to mutate curtain state here.
+func (ws *WindowingServer) PostNotice(n mosapp.Notice) {
+	if ws.curtain != nil {
+		ws.curtain.AddNotice(n)
+	}
+	ws.log("notice: " + n.Title + " — " + n.Body)
+}
+
+// grantFocus moves keyboard/IME focus to w, notifying the previous holder.
+// Passing nil clears the focus slot entirely. Called from drain (on the main
+// goroutine) in response to CmdRequestFocus, and automatically by the server
+// when a window becomes the sole active window in fullscreen mode.
+func (ws *WindowingServer) grantFocus(w *Window) {
+	if ws.keyboardFocus == w {
+		return
+	}
+	if ws.keyboardFocus != nil {
+		ws.keyboardFocus.ctx.hasFocus.Store(false)
+	}
+	ws.keyboardFocus = w
+	if w != nil {
+		w.ctx.hasFocus.Store(true)
+		ws.log("keyboard focus -> " + w.AppID())
+	} else {
+		ws.log("keyboard focus cleared")
+	}
+}
+
+// releaseFocus clears keyboard focus if w currently holds it.
+// Called from drain in response to CmdReleaseFocus.
+func (ws *WindowingServer) releaseFocus(w *Window) {
+	if ws.keyboardFocus == w {
+		ws.grantFocus(nil)
+	}
 }
 
 func (ws *WindowingServer) ToggleCurtain() {
@@ -409,8 +453,18 @@ func (ws *WindowingServer) logLifecycleChange(w *Window, before Lifecycle) {
 	switch w.lifecycle {
 	case LifecycleShown:
 		ws.publish(event.Lifecycle{AppID: w.AppID(), Phase: event.PhaseResumed})
+		// In fullscreen mode the newly shown window is the only active window;
+		// auto-grant keyboard focus so apps can receive IME input without an
+		// explicit RequestFocus call. In multi-window modes focus is managed
+		// explicitly by the user or by apps calling RequestFocus().
+		if ws.mwm == nil || ws.mwm.mode == multiModeNone {
+			ws.grantFocus(w)
+		}
 	case LifecycleHiding:
 		ws.publish(event.Lifecycle{AppID: w.AppID(), Phase: event.PhasePaused})
+		// Release keyboard focus when the window starts its closing animation
+		// so the next visible window can acquire it immediately.
+		ws.releaseFocus(w)
 	case LifecycleDestroyed:
 		ws.publish(event.Lifecycle{AppID: w.AppID(), Phase: event.PhaseDestroyed})
 	}
@@ -506,6 +560,16 @@ func (ws *WindowingServer) Shutdown() {
 	ws.windows = nil
 	ws.mwm = nil
 	ws.focusedWindow = nil
+	ws.keyboardFocus = nil
+}
+
+// InvalidateAll marks every shown window as dirty so that each app's Draw is
+// called on the next frame regardless of whether it received input. Use this
+// after a global state change such as a theme switch.
+func (ws *WindowingServer) InvalidateAll() {
+	for _, w := range ws.windows {
+		w.ctx.invalidated.Store(true)
+	}
 }
 
 // Update is the per-frame entry point. Order of operations:
@@ -623,7 +687,27 @@ func (ws *WindowingServer) Update() {
 
 		if w.lifecycle == LifecycleShown {
 			frame := ws.frameForWindow(w, cursor, events, active, gateBelow)
-			w.UpdateApp(frame)
+
+			// Implicit dirty tracking: only wake the app goroutine when there
+			// is something to react to.
+			//
+			//  • hasEvents   – pointer / touch input arrived at this window
+			//  • animActive  – window layout transition still in-flight (mode
+			//                  switch, freeform drag, etc.)
+			//  • needsWakeup – app called ctx.Invalidate() from any goroutine
+			//                  (explicit escape hatch for background state changes
+			//                  or widget animations that outlive their input event)
+			//
+			// Apps with animated widgets (e.g. toggle knob slide) should call
+			// ctx.Invalidate() from Update while the animation is in-flight so
+			// ticks continue until it completes.
+			hasEvents   := len(frame.Events) > 0
+			animActive  := !w.anim.Done()
+			needsWakeup := w.ctx.invalidated.CompareAndSwap(true, false)
+
+			if hasEvents || animActive || needsWakeup {
+				w.UpdateApp(frame) // marks canvasDirty = true internally
+			}
 
 			if w.proc.shouldClose {
 				before := w.lifecycle

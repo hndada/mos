@@ -40,6 +40,18 @@ type DefaultCurtain struct {
 	tileBgOff draws.Image
 	tileBgOn  draws.Image
 
+	// Notification list: notices posted via Context.PostNotice, newest first.
+	notices         []noticeItem
+	noticesTop      float64     // Y where the notice stack begins (panel-local)
+	noticeAreaW     float64     // visible width for notice cards
+	noticeMargin    float64     // left margin / horizontal padding
+	noticeCardH     float64     // height of one notice card
+	noticeCardGap   float64     // vertical gap between notice cards
+	noticeCardBg    draws.Image // shared rounded-rect-ish card background
+	noticeTitleText draws.Text  // reused per-frame
+	noticeBodyText  draws.Text  // reused per-frame
+	noticeTimeText  draws.Text  // reused per-frame
+
 	shown bool
 	y     tween.Tween
 
@@ -47,6 +59,17 @@ type DefaultCurtain struct {
 	// Set by the windowing server via SetBackground each frame before Draw.
 	bgBlur draws.Image
 }
+
+// noticeItem is the in-curtain projection of mosapp.Notice. The receive
+// timestamp is captured at AddNotice time so the rendering can show
+// "now / 14:32" style hints.
+type noticeItem struct {
+	title string
+	body  string
+	when  time.Time
+}
+
+const maxCurtainNotices = 8
 
 func NewDefaultCurtain(screenW, screenH float64, bus *event.Bus) *DefaultCurtain {
 	panelH := screenH * 0.62
@@ -140,8 +163,44 @@ func NewDefaultCurtain(screenW, screenH float64, bus *event.Bus) *DefaultCurtain
 		c.tiles = append(c.tiles, t)
 	}
 
+	// Notification area: stacked card list below the tile row.
+	c.noticeMargin = tilePadX
+	c.noticeAreaW = screenW - tilePadX*2
+	c.noticeCardH = 64
+	c.noticeCardGap = 8
+	c.noticesTop = tilePadTop + tileH + 24
+
+	cardImg := draws.CreateImage(c.noticeAreaW, c.noticeCardH)
+	cardImg.Fill(color.RGBA{40, 44, 56, 220})
+	c.noticeCardBg = cardImg
+
+	titleOpts2 := draws.NewFaceOptions()
+	titleOpts2.Size = 13
+	c.noticeTitleText = draws.NewText("")
+	c.noticeTitleText.SetFace(titleOpts2)
+
+	bodyOpts := draws.NewFaceOptions()
+	bodyOpts.Size = 11
+	c.noticeBodyText = draws.NewText("")
+	c.noticeBodyText.SetFace(bodyOpts)
+
+	timeOpts2 := draws.NewFaceOptions()
+	timeOpts2.Size = 10
+	c.noticeTimeText = draws.NewText("")
+	c.noticeTimeText.SetFace(timeOpts2)
+
 	c.y = curtainAnim(-panelH, -panelH, panelH)
 	return c
+}
+
+// AddNotice prepends a posted notice to the curtain list, capped at
+// maxCurtainNotices so the panel never overflows.
+func (s *DefaultCurtain) AddNotice(n mosapp.Notice) {
+	item := noticeItem{title: n.Title, body: n.Body, when: time.Now()}
+	s.notices = append([]noticeItem{item}, s.notices...)
+	if len(s.notices) > maxCurtainNotices {
+		s.notices = s.notices[:maxCurtainNotices]
+	}
 }
 
 func curtainAnim(from, to, panelH float64) tween.Tween {
@@ -312,6 +371,41 @@ func (s *DefaultCurtain) Draw(dst draws.Image) {
 
 	for _, t := range s.tiles {
 		s.drawTile(dst, t, y)
+	}
+
+	s.drawNotices(dst, y, alpha)
+}
+
+// drawNotices renders the stacked notice cards below the tiles. Cards that
+// would extend past the panel's bottom edge are clipped (skipped).
+func (s *DefaultCurtain) drawNotices(dst draws.Image, panelY float64, alpha float32) {
+	if len(s.notices) == 0 {
+		return
+	}
+	step := s.noticeCardH + s.noticeCardGap
+	maxBottom := panelY + s.panelH - 12 // leave a small bottom inset
+	for i, n := range s.notices {
+		cardTop := panelY + s.noticesTop + float64(i)*step
+		if cardTop+s.noticeCardH > maxBottom {
+			break
+		}
+
+		bg := draws.NewSprite(s.noticeCardBg)
+		bg.Locate(s.noticeMargin, cardTop, draws.LeftTop)
+		bg.ColorScale.ScaleAlpha(alpha)
+		bg.Draw(dst)
+
+		s.noticeTitleText.Text = n.title
+		s.noticeTitleText.Locate(s.noticeMargin+12, cardTop+8, draws.LeftTop)
+		s.noticeTitleText.Draw(dst)
+
+		s.noticeBodyText.Text = n.body
+		s.noticeBodyText.Locate(s.noticeMargin+12, cardTop+28, draws.LeftTop)
+		s.noticeBodyText.Draw(dst)
+
+		s.noticeTimeText.Text = n.when.Format("15:04")
+		s.noticeTimeText.Locate(s.noticeMargin+s.noticeAreaW-12, cardTop+10, draws.RightTop)
+		s.noticeTimeText.Draw(dst)
 	}
 }
 
