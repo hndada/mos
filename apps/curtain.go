@@ -128,11 +128,18 @@ func NewDefaultCurtain(screenW, screenH float64, bus *event.Bus) *DefaultCurtain
 	}{
 		{"Wi-Fi", true, nil},
 		{"Bluetooth", false, nil},
+		{"AOD", true, func(bus *event.Bus, on bool) {
+			if bus != nil {
+				bus.Publish(event.System{Topic: event.TopicAOD, Value: on})
+			}
+		}},
 		{"Dark Mode", false, func(bus *event.Bus, on bool) {
 			if bus != nil {
 				bus.Publish(event.System{Topic: event.TopicDarkMode, Value: on})
 			}
 		}},
+		{"Focus", false, nil},
+		{"Battery", false, nil},
 	}
 
 	labelOpts := draws.NewFaceOptions()
@@ -163,12 +170,13 @@ func NewDefaultCurtain(screenW, screenH float64, bus *event.Bus) *DefaultCurtain
 		c.tiles = append(c.tiles, t)
 	}
 
-	// Notification area: stacked card list below the tile row.
+	// Notification area: stacked card list below the tile rows.
+	tileRows := (len(specs) + cols - 1) / cols
 	c.noticeMargin = tilePadX
 	c.noticeAreaW = screenW - tilePadX*2
 	c.noticeCardH = 64
 	c.noticeCardGap = 8
-	c.noticesTop = tilePadTop + tileH + 24
+	c.noticesTop = tilePadTop + float64(tileRows)*(tileH+tileGap) + 12
 
 	cardImg := draws.CreateImage(c.noticeAreaW, c.noticeCardH)
 	cardImg.Fill(color.RGBA{40, 44, 56, 220})
@@ -271,6 +279,10 @@ func (s *DefaultCurtain) SubscribeBus() {
 		case event.TopicDarkMode:
 			if v, ok := se.Value.(bool); ok {
 				s.setTileByLabel("Dark Mode", v)
+			}
+		case event.TopicAOD:
+			if v, ok := se.Value.(bool); ok {
+				s.setTileByLabel("AOD", v)
 			}
 		}
 	})
@@ -376,19 +388,17 @@ func (s *DefaultCurtain) Draw(dst draws.Image) {
 	s.drawNotices(dst, y, alpha)
 }
 
-// drawNotices renders the stacked notice cards below the tiles. Cards that
-// would extend past the panel's bottom edge are clipped (skipped).
+// drawNotices renders only the notification cards visible in the panel.
 func (s *DefaultCurtain) drawNotices(dst draws.Image, panelY float64, alpha float32) {
 	if len(s.notices) == 0 {
 		return
 	}
 	step := s.noticeCardH + s.noticeCardGap
-	maxBottom := panelY + s.panelH - 12 // leave a small bottom inset
-	for i, n := range s.notices {
+	viewportH := s.panelH - s.noticesTop - 12
+	start, end := ui.VisibleRange(0, viewportH, step, len(s.notices), 0)
+	for i := start; i < end; i++ {
+		n := s.notices[i]
 		cardTop := panelY + s.noticesTop + float64(i)*step
-		if cardTop+s.noticeCardH > maxBottom {
-			break
-		}
 
 		bg := draws.NewSprite(s.noticeCardBg)
 		bg.Locate(s.noticeMargin, cardTop, draws.LeftTop)

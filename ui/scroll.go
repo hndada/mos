@@ -18,6 +18,7 @@ type ScrollBox struct {
 	offset     draws.XY
 	prevCursor draws.XY
 	scrolling  bool
+	pointer    int
 }
 
 func (s *ScrollBox) maxOffset() draws.XY {
@@ -48,17 +49,20 @@ func (s *ScrollBox) Update(frame mosapp.Frame) {
 				Y: -ev.Wheel.Y * wheelScrollSpeed,
 			})
 		case input.EventDown:
-			if s.In(ev.Pos) {
+			if !s.scrolling && s.In(ev.Pos) {
 				s.scrolling = true
+				s.pointer = ev.Pointer
 				s.prevCursor = ev.Pos
 			}
 		case input.EventMove:
-			if s.scrolling {
+			if s.scrolling && ev.Pointer == s.pointer {
 				s.ScrollBy(s.prevCursor.Sub(ev.Pos))
 				s.prevCursor = ev.Pos
 			}
 		case input.EventUp:
-			s.scrolling = false
+			if s.scrolling && ev.Pointer == s.pointer {
+				s.scrolling = false
+			}
 		}
 	}
 }

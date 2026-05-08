@@ -1,10 +1,8 @@
 package apps
 
 import (
-	"image"
 	"image/color"
 
-	"github.com/hajimehoshi/ebiten/v2"
 	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/event"
@@ -61,8 +59,8 @@ type Settings struct {
 	scrollOff float64
 	dragging  bool
 	dragPrevY float64
-	// pre-allocated canvas for the content area
-	canvas   draws.Image
+	// pre-allocated canvas for the visible list viewport
+	viewport draws.Image
 	titleBg  draws.Sprite
 	title    draws.Text
 	headerBg draws.Sprite
@@ -126,7 +124,7 @@ func NewSettings(screenW, screenH float64) *Settings {
 		y += h
 	}
 	s.contentH = y
-	s.canvas = draws.CreateImage(screenW, s.contentH)
+	s.viewport = draws.CreateImage(screenW, s.viewportH())
 	s.initAssets()
 	return s
 }
@@ -230,7 +228,8 @@ func (s *Settings) Update(frame mosapp.Frame) {
 			childFrame.Events[i] = ev
 		}
 	}
-	for _, r := range s.rows {
+	start, end := s.visibleRows(1)
+	for _, r := range s.rows[start:end] {
 		if r.toggle != nil {
 			if r.toggle.Update(childFrame) {
 				s.onToggleChanged(r)
@@ -240,6 +239,37 @@ func (s *Settings) Update(frame mosapp.Frame) {
 			r.slider.Update(childFrame)
 		}
 	}
+}
+
+func (s *Settings) visibleRows(overscan int) (start, end int) {
+	top := s.scrollOff
+	bottom := s.scrollOff + s.viewportH()
+	start = len(s.rows)
+	for i, r := range s.rows {
+		rowBottom := r.y + settingsRowHeight(r.kind)
+		if rowBottom >= top {
+			start = max(0, i-overscan)
+			break
+		}
+	}
+	if start == len(s.rows) {
+		return len(s.rows), len(s.rows)
+	}
+	end = len(s.rows)
+	for i := start; i < len(s.rows); i++ {
+		if s.rows[i].y > bottom {
+			end = min(len(s.rows), i+overscan)
+			break
+		}
+	}
+	return start, end
+}
+
+func settingsRowHeight(kind settingsKind) float64 {
+	if kind == kindHeader {
+		return settingsHdrH
+	}
+	return settingsRowH
 }
 
 // onToggleChanged maps a row label to a system event topic and broadcasts
@@ -264,57 +294,54 @@ func (s *Settings) Draw(dst draws.Image) {
 	s.titleBg.Draw(dst)
 	s.title.Draw(dst)
 
-	// Content rows onto canvas.
-	s.canvas.Fill(settingsBg)
+	s.viewport.Fill(settingsBg)
 
-	for _, r := range s.rows {
+	start, end := s.visibleRows(1)
+	for _, r := range s.rows[start:end] {
 		s.drawRow(r)
 	}
 
-	// Blit visible portion to screen.
-	clipY := int(s.scrollOff)
-	clipH := int(min(s.viewportH(), s.contentH-s.scrollOff))
-	if clipH <= 0 {
-		return
-	}
-	sub := s.canvas.Image.SubImage(
-		image.Rect(0, clipY, int(s.screenW), clipY+clipH),
-	).(*ebiten.Image)
-
-	op := &ebiten.DrawImageOptions{}
-	op.GeoM.Translate(0, settingsStatusH+settingsTitleH)
-	dst.DrawImage(sub, op)
+	sp := draws.NewSprite(s.viewport)
+	sp.Locate(0, settingsStatusH+settingsTitleH, draws.LeftTop)
+	sp.Draw(dst)
 }
 
 func (s *Settings) drawRow(r *settingsRow) {
+	y := r.y - s.scrollOff
 	switch r.kind {
 	case kindHeader:
 		hdrSp := s.headerBg
-		hdrSp.Locate(0, r.y, draws.LeftTop)
-		hdrSp.Draw(s.canvas)
+		hdrSp.Locate(0, y, draws.LeftTop)
+		hdrSp.Draw(s.viewport)
 
-		r.labelText.Draw(s.canvas)
+		label := r.labelText
+		label.Position.Y = y + settingsHdrH/2
+		label.Draw(s.viewport)
 
 	case kindToggle, kindSlider, kindNav:
 		rowSp := s.rowBg
-		rowSp.Locate(0, r.y, draws.LeftTop)
-		rowSp.Draw(s.canvas)
+		rowSp.Locate(0, y, draws.LeftTop)
+		rowSp.Draw(s.viewport)
 
 		// Separator line at bottom of row.
 		sepSp := s.sep
-		sepSp.Locate(settingsPad, r.y+settingsRowH-1, draws.LeftTop)
-		sepSp.Draw(s.canvas)
+		sepSp.Locate(settingsPad, y+settingsRowH-1, draws.LeftTop)
+		sepSp.Draw(s.viewport)
 
-		r.labelText.Draw(s.canvas)
+		label := r.labelText
+		label.Position.Y = y + settingsRowH/2
+		label.Draw(s.viewport)
 
 		if r.toggle != nil {
-			r.toggle.Draw(s.canvas)
+			r.toggle.DrawOffset(s.viewport, -s.scrollOff)
 		}
 		if r.slider != nil {
-			r.slider.Draw(s.canvas)
+			r.slider.DrawOffset(s.viewport, -s.scrollOff)
 		}
 		if r.kind == kindNav {
-			r.detailText.Draw(s.canvas)
+			detail := r.detailText
+			detail.Position.Y = y + settingsRowH/2
+			detail.Draw(s.viewport)
 		}
 	}
 }

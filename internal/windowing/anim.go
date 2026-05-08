@@ -7,12 +7,12 @@ import (
 	"github.com/hndada/mos/internal/tween"
 )
 
-// WindowAnim bundles the five property transitions that drive a Window:
+// anim bundles the five property transitions that drive a Window:
 // position (X, Y), size (W, H), and alpha. Methods are intent-level
 // (OpenFrom, CloseTo, SnapOpen) so window code never pokes individual
 // properties — and retargeting is uniform: every dimension rebases from
 // its current value, so a mid-open Dismiss reverses smoothly.
-type WindowAnim struct {
+type anim struct {
 	posX, posY   tween.Transition
 	sizeW, sizeH tween.Transition
 	alpha        tween.Transition
@@ -21,7 +21,7 @@ type WindowAnim struct {
 // OpenFrom begins the icon-zoom open: position and size start at iconPos /
 // iconSize, then animate to the centre and full extent of screen. Alpha is
 // snapped to 1 (the open animation does not fade).
-func (a *WindowAnim) OpenFrom(iconPos, iconSize, screen draws.XY, dur time.Duration) {
+func (a *anim) OpenFrom(iconPos, iconSize, screen draws.XY, dur time.Duration) {
 	a.posX.Snap(iconPos.X)
 	a.posY.Snap(iconPos.Y)
 	a.sizeW.Snap(iconSize.X)
@@ -38,7 +38,7 @@ func (a *WindowAnim) OpenFrom(iconPos, iconSize, screen draws.XY, dur time.Durat
 // CloseTo retargets every property to shrink toward targetCenter / targetSize
 // and fade out over dur. Safe to call mid-open: each property rebases from
 // its current value, producing a continuous reversal rather than a snap.
-func (a *WindowAnim) CloseTo(targetCenter, targetSize draws.XY, dur time.Duration) {
+func (a *anim) CloseTo(targetCenter, targetSize draws.XY, dur time.Duration) {
 	ease := tween.EaseOutExponential
 	a.posX.To(targetCenter.X, dur, ease)
 	a.posY.To(targetCenter.Y, dur, ease)
@@ -49,7 +49,7 @@ func (a *WindowAnim) CloseTo(targetCenter, targetSize draws.XY, dur time.Duratio
 
 // SnapOpen sets the window to the fully-open state instantly (no animation).
 // Used when restoring an active window after a display-mode change.
-func (a *WindowAnim) SnapOpen(screen draws.XY) {
+func (a *anim) SnapOpen(screen draws.XY) {
 	a.posX.Snap(screen.X / 2)
 	a.posY.Snap(screen.Y / 2)
 	a.sizeW.Snap(screen.X)
@@ -57,12 +57,12 @@ func (a *WindowAnim) SnapOpen(screen draws.XY) {
 	a.alpha.Snap(1)
 }
 
-func (a *WindowAnim) Pos() draws.XY  { return draws.XY{X: a.posX.Value(), Y: a.posY.Value()} }
-func (a *WindowAnim) Size() draws.XY { return draws.XY{X: a.sizeW.Value(), Y: a.sizeH.Value()} }
-func (a *WindowAnim) Alpha() float64 { return a.alpha.Value() }
+func (a *anim) Pos() draws.XY  { return draws.XY{X: a.posX.Value(), Y: a.posY.Value()} }
+func (a *anim) Size() draws.XY { return draws.XY{X: a.sizeW.Value(), Y: a.sizeH.Value()} }
+func (a *anim) Alpha() float64 { return a.alpha.Value() }
 
 // Done reports whether all property transitions have reached their target.
-func (a *WindowAnim) Done() bool {
+func (a *anim) Done() bool {
 	return a.posX.Done() && a.posY.Done() &&
 		a.sizeW.Done() && a.sizeH.Done() &&
 		a.alpha.Done()
@@ -72,7 +72,7 @@ func (a *WindowAnim) Done() bool {
 // unchanged. Used when switching a window between fullscreen, split, pip,
 // and freeform modes. Each property rebases from its current animated value
 // so a retarget mid-flight is continuous (no positional jump).
-func (a *WindowAnim) Retarget(center, size draws.XY, dur time.Duration) {
+func (a *anim) Retarget(center, size draws.XY, dur time.Duration) {
 	ease := tween.EaseOutExponential
 	a.posX.To(center.X, dur, ease)
 	a.posY.To(center.Y, dur, ease)
@@ -82,7 +82,7 @@ func (a *WindowAnim) Retarget(center, size draws.XY, dur time.Duration) {
 
 // SnapTo places the window at center/size instantly (no animation).
 // Used for real-time drag operations that must track the pointer with zero lag.
-func (a *WindowAnim) SnapTo(center, size draws.XY) {
+func (a *anim) SnapTo(center, size draws.XY) {
 	a.posX.Snap(center.X)
 	a.posY.Snap(center.Y)
 	a.sizeW.Snap(size.X)

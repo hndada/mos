@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"image/color"
+	"math"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -11,6 +12,7 @@ import (
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/event"
 	"github.com/hndada/mos/internal/input"
+	"github.com/hndada/mos/internal/tween"
 	"github.com/hndada/mos/internal/windowing"
 	"github.com/hndada/mos/ui"
 	uithem "github.com/hndada/mos/ui/theme"
@@ -120,22 +122,33 @@ func rotateSpec(s screenSpec) screenSpec {
 }
 
 func placeDisplayGroup(w, h float64) (float64, float64) {
+	left := logX + logW + logGap
+	right := actionPanelLeft() - logGap
+	if right-left >= w {
+		return left + (right-left-w)/2, (simH - h) / 2
+	}
+
 	centerX := func(width float64) float64 { return (simW - width) / 2 }
 	centerY := func(height float64) float64 { return (simH - height) / 2 }
-	overlapsLog := func(x, y float64) bool {
-		return x < logX+logW+logGap &&
+	overlapsReserved := func(x, y float64) bool {
+		overlapsLog := x < logX+logW+logGap &&
 			x+w > logX &&
 			y < logY+logH+logGap &&
 			y+h > logY
+		overlapsControls := x+w > actionPanelLeft()-logGap &&
+			x < simW &&
+			y < actionPanelBottom()+logGap &&
+			y+h > actionPanelMargin
+		return overlapsLog || overlapsControls
 	}
 
 	x, y := centerX(w), centerY(h)
-	if !overlapsLog(x, y) {
+	if !overlapsReserved(x, y) {
 		return x, y
 	}
 
 	rightX := logX + logW + logGap
-	if rightX+w <= simW-borderPx {
+	if rightX+w <= actionPanelLeft()-logGap {
 		return rightX, centerY(h)
 	}
 
@@ -207,7 +220,7 @@ type simulator struct {
 	groups            [displayModeCount]displayGroup
 	simGroup          simGroup
 	canvas            draws.Image // render target for the active display
-	ws                windowing.WindowingServer
+	ws                windowing.Server
 	display           windowing.Display
 	help              draws.Text
 	log               simLog
@@ -229,10 +242,12 @@ type simulator struct {
 	// Sim-level action panel: one tappable button per supported action.
 	// Lives in raw viewport coords (not on the phone canvas) and operates
 	// regardless of display power, so users can power on with a click.
-	actionPanel ui.ControlPanel
+	actions      []simAction
+	actionGroups []simActionGroup
 
 	// AOD renders a low-power clock when the display is "powered off."
-	aod *apps.DefaultAOD
+	aod        *apps.DefaultAOD
+	aodEnabled bool
 
 	// bus is the current OS-wide event bus (recreated on applyMode).
 	bus *event.Bus
@@ -247,19 +262,43 @@ type simulator struct {
 	// frame-level boolean, not a one-shot consumer).
 	rawInput input.Producer
 	navInput input.Producer
+
+	rotateAnim rotateAnimation
 }
 
 const helpString = "P: Power   X: Lock   1/2/3: Bar-Flip-Fold   S: Screen   O: Rotate   B/Esc: Back   N: Curtain   K: Keys   V: Ring   W: Split   I: PiP   G: Float   Tab: Focus   L/F: Log"
 
+type simAction struct {
+	Label   string
+	Group   string
+	Keys    []input.Key
+	Handler func()
+}
+
+type simActionGroup struct {
+	title draws.Text
+	panel ui.ControlPanel
+}
+
+type rotateAnimation struct {
+	active   bool
+	snapshot draws.Image
+	clip     draws.Image
+	p        tween.Transition
+	dir      float64
+}
+
 const (
 	controlPanelH = 38.0
-	logMaxLines   = 31
+	logMaxLines   = 7
 	logX          = 12.0
 	logY          = 12.0
-	logW          = 560.0
-	logH          = simH - logY - 52
+	logW          = 280.0
+	logH          = 160.0
 	logGap        = 28.0
 )
+
+const rotateAnimDuration = 320 * time.Millisecond
 
 type simLog struct {
 	bg      draws.Sprite
@@ -275,12 +314,13 @@ func newSimLog() simLog {
 	bg.Locate(logX, logY, draws.LeftTop)
 
 	opts := draws.NewFaceOptions()
-	opts.Size = 16
+	opts.Size = 12
 	lines := make([]draws.Text, logMaxLines)
 	for i := range lines {
 		lines[i] = draws.NewText("")
 		lines[i].SetFace(opts)
-		lines[i].Locate(28, 58+float64(i)*22, draws.LeftTop)
+		lines[i].ColorScale.Scale(1, 1, 1, 1)
+		lines[i].Locate(logX+12, logY+12+float64(i)*19, draws.LeftTop)
 	}
 
 	return simLog{
@@ -331,7 +371,7 @@ func (l *simLog) Draw(dst draws.Image) {
 }
 
 func newSimulator() *simulator {
-	s := &simulator{isDark: true} // theme.Dark() is active at startup
+	s := &simulator{isDark: true, aodEnabled: true} // theme.Dark() is active at startup
 	s.groups = groups()
 	s.activeDisplay = primaryIndex(s.groups[s.mode])
 
@@ -344,6 +384,7 @@ func newSimulator() *simulator {
 	s.log = newSimLog()
 	s.logf("simulator boot")
 
+	s.actions = s.buildActions()
 	s.buildActionPanel()
 	s.applyMode()
 	return s
@@ -351,52 +392,111 @@ func newSimulator() *simulator {
 
 const actionPanelMargin = 12.0
 const actionPanelCols = 2
+const actionPanelTitleGap = 4.0
+const actionPanelSectionGap = 10.0
 
-// buildActionPanel constructs the right-side ui.ControlPanel listing every
-// supported simulator action. Each entry's handler is the same function the
-// matching keyboard shortcut invokes, so click and key paths stay in sync.
-func (s *simulator) buildActionPanel() {
-	actions := []ui.ControlAction{
-		{Label: "Power", Handler: s.togglePower},
-		{Label: "Lock", Handler: s.toggleLock},
-		{Label: "Bar", Handler: func() { s.setMode(displayModeBar) }},
-		{Label: "Flip", Handler: func() { s.setMode(displayModeFlip) }},
-		{Label: "Fold", Handler: func() { s.setMode(displayModeFold) }},
-		{Label: "Screen", Handler: s.cycleActiveDisplay},
-		{Label: "Rotate", Handler: s.rotateScreen},
-		{Label: "Back", Handler: func() { s.ws.GoBack() }},
-		{Label: "Home", Handler: func() { s.ws.GoHome() }},
-		{Label: "Recents", Handler: func() { s.ws.GoRecents() }},
-		{Label: "Curtain", Handler: func() { s.ws.ToggleCurtain() }},
-		{Label: "Keys", Handler: func() { s.ws.ToggleKeyboard() }},
-		{Label: "Ring", Handler: func() { s.ws.ReceiveCall() }},
-		{Label: "Shot", Handler: s.requestScreenshot},
-		{Label: "Split", Handler: func() { s.ws.EnterSplit() }},
-		{Label: "PiP", Handler: func() { s.ws.EnterPip() }},
-		{Label: "Float", Handler: func() { s.ws.EnterFreeform() }},
-		{Label: "Focus", Handler: func() { s.ws.CycleFocus() }},
-		// "Dark" toggles between dark and light themes by publishing a
-		// TopicDarkMode event — the same path that the Settings toggle uses.
-		{Label: "Dark", Handler: func() {
-			if s.bus != nil {
-				s.bus.Publish(event.System{
-					Topic: event.TopicDarkMode,
-					Value: !s.isDark,
-				})
-			}
-		}},
-		{Label: "Log", Handler: s.toggleLog},
-		{Label: "Clear", Handler: s.clearLog},
+func actionPanelWidth() float64 {
+	return ui.ControlPanelButtonW*float64(actionPanelCols) +
+		ui.ControlPanelGap*float64(actionPanelCols-1) + ui.ControlPanelPad*2
+}
+
+func actionPanelLeft() float64 {
+	return simW - actionPanelWidth() - actionPanelMargin
+}
+
+func actionPanelBottom() float64 {
+	groupOrder := []string{"Scenario", "Device", "Form", "Display", "Navigation", "System", "Windowing", "Debug"}
+	rowsByGroup := map[string]int{
+		"Scenario":   2,
+		"Device":     2,
+		"Form":       2,
+		"Display":    1,
+		"Navigation": 2,
+		"System":     2,
+		"Windowing":  2,
+		"Debug":      1,
 	}
+	titleH := 12.0
+	y := actionPanelMargin
+	for _, group := range groupOrder {
+		rows := rowsByGroup[group]
+		panelH := ui.ControlPanelButtonH*float64(rows) +
+			ui.ControlPanelGap*float64(rows-1) + ui.ControlPanelPad*2
+		y += titleH + actionPanelTitleGap + panelH + actionPanelSectionGap
+	}
+	return y
+}
 
+func (s *simulator) buildActions() []simAction {
+	return []simAction{
+		{Label: "Split Msg", Group: "Scenario", Handler: s.scenarioSplitMessages},
+		{Label: "Chat Keys", Group: "Scenario", Handler: s.scenarioMessageKeyboard},
+		{Label: "Curtain", Group: "Scenario", Handler: s.scenarioCurtainNotices},
+		{Label: "Recents", Group: "Scenario", Handler: s.scenarioRecentsStack},
+		{Label: "Power", Group: "Device", Keys: []input.Key{input.KeyP}, Handler: s.togglePower},
+		{Label: "Lock", Group: "Device", Keys: []input.Key{input.KeyX}, Handler: s.toggleLock},
+		{Label: "Shot", Group: "Device", Keys: []input.Key{input.KeyC, input.KeyPrintScreen}, Handler: s.requestScreenshot},
+		{Label: "Bar", Group: "Form", Keys: []input.Key{input.KeyDigit1}, Handler: func() { s.setMode(displayModeBar) }},
+		{Label: "Flip", Group: "Form", Keys: []input.Key{input.KeyDigit2}, Handler: func() { s.setMode(displayModeFlip) }},
+		{Label: "Fold", Group: "Form", Keys: []input.Key{input.KeyDigit3}, Handler: func() { s.setMode(displayModeFold) }},
+		{Label: "Screen", Group: "Display", Keys: []input.Key{input.KeyS}, Handler: s.cycleActiveDisplay},
+		{Label: "Rotate", Group: "Display", Keys: []input.Key{input.KeyO}, Handler: s.rotateScreen},
+		{Label: "Back", Group: "Navigation", Keys: []input.Key{input.KeyB, input.KeyEscape, input.KeyBackspace}, Handler: func() { s.ws.GoBack() }},
+		{Label: "Home", Group: "Navigation", Keys: []input.Key{input.KeyH}, Handler: func() { s.ws.GoHome() }},
+		{Label: "Recents", Group: "Navigation", Keys: []input.Key{input.KeyR}, Handler: func() { s.ws.GoRecents() }},
+		{Label: "Curtain", Group: "System", Keys: []input.Key{input.KeyN}, Handler: func() { s.ws.ToggleCurtain() }},
+		{Label: "Keys", Group: "System", Keys: []input.Key{input.KeyK}, Handler: func() { s.ws.ToggleKeyboard() }},
+		{Label: "Ring", Group: "System", Keys: []input.Key{input.KeyV}, Handler: func() { s.ws.ReceiveCall() }},
+		{Label: "Dark", Group: "System", Handler: func() { s.ws.SetDarkMode(!s.isDark) }},
+		{Label: "Split", Group: "Windowing", Keys: []input.Key{input.KeyW}, Handler: func() { s.ws.EnterSplit() }},
+		{Label: "PiP", Group: "Windowing", Keys: []input.Key{input.KeyI}, Handler: func() { s.ws.EnterPip() }},
+		{Label: "Float", Group: "Windowing", Keys: []input.Key{input.KeyG}, Handler: func() { s.ws.EnterFreeform() }},
+		{Label: "Focus", Group: "Windowing", Keys: []input.Key{input.KeyTab}, Handler: func() { s.ws.CycleFocus() }},
+		{Label: "Log", Group: "Debug", Keys: []input.Key{input.KeyL}, Handler: s.toggleLog},
+		{Label: "Clear", Group: "Debug", Keys: []input.Key{input.KeyF}, Handler: s.clearLog},
+	}
+}
+
+// buildActionPanel constructs right-side ui.ControlPanels from the same
+// action table used by keyboard shortcuts, keeping click and key paths in sync.
+func (s *simulator) buildActionPanel() {
 	// Anchor the panel flush with the right viewport edge. We only need its
 	// width to do that; the panel itself derives its full footprint internally.
-	panelW := ui.ControlPanelButtonW*float64(actionPanelCols) +
-		ui.ControlPanelGap*float64(actionPanelCols-1) + ui.ControlPanelPad*2
-	x := simW - panelW - actionPanelMargin
+	x := actionPanelLeft()
 	y := actionPanelMargin
 
-	s.actionPanel = ui.NewControlPanel(x, y, actionPanelCols, actions)
+	groupOrder := []string{"Scenario", "Device", "Form", "Display", "Navigation", "System", "Windowing", "Debug"}
+	s.actionGroups = s.actionGroups[:0]
+	titleOpts := draws.NewFaceOptions()
+	titleOpts.Size = 10
+
+	for _, group := range groupOrder {
+		actions := s.controlActionsForGroup(group)
+		if len(actions) == 0 {
+			continue
+		}
+
+		title := draws.NewText(group)
+		title.SetFace(titleOpts)
+		title.ColorScale.Scale(1, 1, 1, 1)
+		title.Locate(x, y, draws.LeftTop)
+		y += title.Size().Y + actionPanelTitleGap
+
+		panel := ui.NewControlPanel(x, y, actionPanelCols, actions)
+		y += panel.Size().Y + actionPanelSectionGap
+		s.actionGroups = append(s.actionGroups, simActionGroup{title: title, panel: panel})
+	}
+}
+
+func (s *simulator) controlActionsForGroup(group string) []ui.ControlAction {
+	var actions []ui.ControlAction
+	for _, a := range s.actions {
+		if a.Group != group {
+			continue
+		}
+		actions = append(actions, ui.ControlAction{Label: a.Label, Handler: a.Handler})
+	}
+	return actions
 }
 
 func (s *simulator) logf(format string, args ...any) {
@@ -426,27 +526,38 @@ func (s *simulator) applyMode() {
 	s.canvas = draws.CreateImage(active.w, active.h)
 	bus := event.NewBus()
 	s.bus = bus
-	s.ws = windowing.WindowingServer{ScreenW: active.w, ScreenH: active.h, Bus: bus}
+	s.ws = windowing.Server{ScreenW: active.w, ScreenH: active.h, Bus: bus}
 
-	// Subscribe to the dark-mode system event so that the Settings toggle and
-	// the simulator action panel both funnel through the same path.
+	// Subscribe to system setting events so Settings, curtain tiles, and the
+	// simulator action panel all funnel through the same path.
 	bus.Subscribe(event.KindSystem, func(e event.Event) {
 		sys, ok := e.(event.System)
-		if !ok || sys.Topic != event.TopicDarkMode {
-			return
-		}
-		dark, ok := sys.Value.(bool)
 		if !ok {
 			return
 		}
-		s.isDark = dark
-		if dark {
-			uithem.Set(uithem.Dark())
-		} else {
-			uithem.Set(uithem.Light())
+		switch sys.Topic {
+		case event.TopicDarkMode:
+			dark, ok := sys.Value.(bool)
+			if !ok {
+				return
+			}
+			s.isDark = dark
+			if dark {
+				uithem.Set(uithem.Dark())
+			} else {
+				uithem.Set(uithem.Light())
+			}
+			s.ws.InvalidateAll()
+		case event.TopicAOD:
+			enabled, ok := sys.Value.(bool)
+			if !ok {
+				return
+			}
+			s.aodEnabled = enabled
+			s.logf("aod=%v", enabled)
 		}
-		s.ws.InvalidateAll()
 	})
+	s.ws.SetDarkMode(s.isDark)
 	s.ws.SetLogger(s.logLine)
 	s.ws.SetScreenshots(s.screenshots)
 	s.ws.SetWallpaper(apps.NewDefaultWallpaper(active.w, active.h))
@@ -467,6 +578,8 @@ func (s *simulator) applyMode() {
 	s.ws.SetStatusBar(apps.NewDefaultStatusBar(active.w, active.h))
 	curtain := apps.NewDefaultCurtain(active.w, active.h, bus)
 	curtain.SubscribeBus()
+	bus.Publish(event.System{Topic: event.TopicDarkMode, Value: s.isDark})
+	bus.Publish(event.System{Topic: event.TopicAOD, Value: s.aodEnabled})
 	s.ws.SetCurtain(curtain)
 	s.ws.SetKeyboard(apps.NewDefaultKeyboard(active.w, active.h))
 	s.ws.SetLock(apps.NewDefaultLock(active.w, active.h))
@@ -539,6 +652,7 @@ func (s *simulator) configureTriggerVisuals(bg *draws.Sprite, txt *draws.Text, b
 		opts.Size = 10
 		*txt = draws.NewText("")
 		txt.SetFace(opts)
+		txt.ColorScale.Scale(0.07, 0.07, 0.07, 1)
 	}
 	txt.Text = label
 	txt.Locate(box.Position.X+box.W()/2, box.Position.Y+box.H()/2, draws.CenterMiddle)
@@ -588,13 +702,40 @@ func (s *simulator) effectiveGroup() displayGroup {
 // rotateScreen toggles the active display between portrait and landscape and
 // rebuilds the windowing server (which preserves the active app and history).
 func (s *simulator) rotateScreen() {
+	snapshot := s.snapshotCanvas()
+	dir := 1.0
 	s.rotated = !s.rotated
 	if s.rotated {
 		s.logf("rotate -> landscape")
 	} else {
 		s.logf("rotate -> portrait")
+		dir = -1
 	}
 	s.applyMode()
+	s.startRotateAnimation(snapshot, dir)
+}
+
+func (s *simulator) snapshotCanvas() draws.Image {
+	if s.canvas.IsEmpty() {
+		return draws.Image{}
+	}
+	size := s.canvas.Size()
+	img := draws.CreateImage(size.X, size.Y)
+	img.DrawImage(s.canvas.Image, &ebiten.DrawImageOptions{})
+	return img
+}
+
+func (s *simulator) startRotateAnimation(snapshot draws.Image, dir float64) {
+	if snapshot.IsEmpty() {
+		return
+	}
+	s.rotateAnim = rotateAnimation{
+		active:   true,
+		snapshot: snapshot,
+		dir:      dir,
+	}
+	s.rotateAnim.p.Snap(0)
+	s.rotateAnim.p.To(1, rotateAnimDuration, tween.EaseOutExponential)
 }
 
 func (s *simulator) toggleLog() {
@@ -629,71 +770,52 @@ func (s *simulator) requestScreenshot() {
 	s.logf("screenshot requested")
 }
 
+func (s *simulator) scenarioSplitMessages() {
+	s.ws.ExitMultiWindow()
+	s.ws.Launch(windowing.AppIDSettings)
+	s.ws.Launch(windowing.AppIDMessage)
+	s.ws.EnterSplit()
+	s.logf("scenario: split messages")
+}
+
+func (s *simulator) scenarioMessageKeyboard() {
+	s.ws.ExitMultiWindow()
+	s.ws.Launch(windowing.AppIDMessage)
+	s.ws.ShowKeyboard()
+	s.logf("scenario: message keyboard")
+}
+
+func (s *simulator) scenarioCurtainNotices() {
+	s.ws.PostNotice(mosapp.Notice{Title: "Build", Body: "Scenario notice: compositor ready"})
+	s.ws.PostNotice(mosapp.Notice{Title: "Message", Body: "Try reply flow with keyboard"})
+	s.ws.PostNotice(mosapp.Notice{Title: "System", Body: "Dark mode and split are available"})
+	s.ws.ToggleCurtain()
+	s.logf("scenario: curtain notices")
+}
+
+func (s *simulator) scenarioRecentsStack() {
+	s.ws.ExitMultiWindow()
+	s.ws.Launch(windowing.AppIDGallery)
+	s.ws.Launch(windowing.AppIDSceneTest)
+	s.ws.Launch(windowing.AppIDMessage)
+	s.ws.GoRecents()
+	s.logf("scenario: recents stack")
+}
+
 func (s *simulator) Update() error {
+	input.SetCursorOffset(0, 0)
 	rawX, rawY := ebiten.CursorPosition()
 	rawCursor := draws.XY{X: float64(rawX), Y: float64(rawY)}
 
-	if input.IsKeyJustPressed(input.KeyP) {
-		s.togglePower()
+	for _, a := range s.actions {
+		for _, k := range a.Keys {
+			if input.IsKeyJustPressed(k) {
+				a.Handler()
+				break
+			}
+		}
 	}
-	if input.IsKeyJustPressed(input.KeyX) {
-		s.toggleLock()
-	}
-	if input.IsKeyJustPressed(input.KeyDigit1) {
-		s.setMode(displayModeBar)
-	}
-	if input.IsKeyJustPressed(input.KeyDigit2) {
-		s.setMode(displayModeFlip)
-	}
-	if input.IsKeyJustPressed(input.KeyDigit3) {
-		s.setMode(displayModeFold)
-	}
-	if input.IsKeyJustPressed(input.KeyS) {
-		s.cycleActiveDisplay()
-	}
-	if input.IsKeyJustPressed(input.KeyO) {
-		s.rotateScreen()
-	}
-	if input.IsKeyJustPressed(input.KeyL) {
-		s.toggleLog()
-	}
-	if input.IsKeyJustPressed(input.KeyF) {
-		s.clearLog()
-	}
-	if input.IsKeyJustPressed(input.KeyC) || input.IsKeyJustPressed(input.KeyPrintScreen) {
-		s.requestScreenshot()
-	}
-	if input.IsKeyJustPressed(input.KeyB) || input.IsKeyJustPressed(input.KeyEscape) || input.IsKeyJustPressed(input.KeyBackspace) {
-		s.ws.GoBack()
-	}
-	if input.IsKeyJustPressed(input.KeyH) {
-		s.ws.GoHome()
-	}
-	if input.IsKeyJustPressed(input.KeyR) {
-		s.ws.GoRecents()
-	}
-	if input.IsKeyJustPressed(input.KeyK) {
-		s.ws.ToggleKeyboard()
-	}
-	if input.IsKeyJustPressed(input.KeyV) {
-		s.ws.ReceiveCall()
-	}
-	if input.IsKeyJustPressed(input.KeyN) {
-		s.ws.ToggleCurtain()
-	}
-	if input.IsKeyJustPressed(input.KeyW) {
-		s.ws.EnterSplit()
-	}
-	if input.IsKeyJustPressed(input.KeyI) {
-		s.ws.EnterPip()
-	}
-	if input.IsKeyJustPressed(input.KeyG) {
-		s.ws.EnterFreeform()
-	}
-	if input.IsKeyJustPressed(input.KeyTab) {
-		s.ws.CycleFocus()
-	}
-	if !s.display.Powered() && s.aod != nil {
+	if !s.display.Powered() && s.aodEnabled && s.aod != nil {
 		// AOD ticks even when the display is "off" so the clock keeps moving.
 		s.aod.Update()
 	}
@@ -701,10 +823,13 @@ func (s *simulator) Update() error {
 	// Sim action panel runs in raw viewport coords and dispatches regardless
 	// of display power, so a click on Power can wake the screen.
 	rawFrame := mosapp.Frame{Cursor: rawCursor, Events: s.rawInput.Poll()}
-	s.actionPanel.Update(rawFrame)
+	for i := range s.actionGroups {
+		s.actionGroups[i].panel.Update(rawFrame)
+	}
 
 	if s.display.Powered() {
-		active := s.groups[s.mode][s.activeDisplay]
+		group := s.effectiveGroup()
+		active := group[s.activeDisplay]
 
 		// On-screen nav buttons share rawFrame with the action panel.
 		if s.backButton.Update(rawFrame) {
@@ -741,33 +866,91 @@ func (s *simulator) Draw(screen *ebiten.Image) {
 			s.screenshots = s.ws.Screenshots()
 			s.captureNext = false
 		}
-	} else if s.aod != nil {
+	} else if s.aodEnabled && s.aod != nil {
 		// Display is off — paint the AOD layer so the active slot below shows
 		// a dim clock instead of going to the slot's idle background.
 		s.canvas.Clear()
 		s.aod.Draw(s.canvas)
+	} else {
+		s.canvas.Fill(color.RGBA{0, 0, 0, 255})
 	}
 
-	for i, sl := range s.simGroup.slots {
-		brdOp := &ebiten.DrawImageOptions{}
-		brdOp.GeoM.Translate(sl.x-borderPx, sl.y-borderPx)
-		screen.DrawImage(sl.border.Image, brdOp)
-
-		op := &ebiten.DrawImageOptions{}
-		op.GeoM.Translate(sl.x, sl.y)
-		// Active slot shows the live canvas — whether powered (full UI) or
-		// not (AOD has been painted onto the canvas in Draw above). Inactive
-		// slots fall back to the idle slot background.
-		if i == s.activeDisplay {
-			screen.DrawImage(s.canvas.Image, op)
-		} else {
-			screen.DrawImage(sl.bg.Image, op)
-		}
-	}
+	s.drawDisplayGroup(screen)
 
 	s.drawTriggers(draws.Image{Image: screen})
 	s.log.Draw(draws.Image{Image: screen})
 	s.help.Draw(draws.Image{Image: screen})
+}
+
+func (s *simulator) drawDisplayGroup(screen *ebiten.Image) {
+	for i, sl := range s.simGroup.slots {
+		s.drawSlot(screen, sl, sl.screenSpec, i == s.activeDisplay)
+	}
+}
+
+func (s *simulator) drawSlot(screen *ebiten.Image, sl screenSlot, spec screenSpec, active bool) {
+	drawImageInSpec(screen, sl.border.Image, screenSpec{
+		x: spec.x - borderPx,
+		y: spec.y - borderPx,
+		w: spec.w + borderPx*2,
+		h: spec.h + borderPx*2,
+	}, 0, 1)
+
+	src := sl.bg.Image
+	if active {
+		src = s.canvas.Image
+	}
+	drawImageInSpec(screen, src, spec, 0, 1)
+	if active {
+		s.drawRotateOverlay(screen, spec)
+	}
+}
+
+func (s *simulator) drawRotateOverlay(screen *ebiten.Image, spec screenSpec) {
+	if !s.rotateAnim.active {
+		return
+	}
+	p := s.rotateAnim.p.Value()
+	theta := s.rotateAnim.dir * (1 - p) * math.Pi / 2
+	alpha := float32(1 - p)
+	s.drawClippedRotateOverlay(screen, spec, theta, alpha)
+	if s.rotateAnim.p.Done() {
+		s.rotateAnim.active = false
+	}
+}
+
+func (s *simulator) drawClippedRotateOverlay(screen *ebiten.Image, spec screenSpec, theta float64, alpha float32) {
+	w, h := int(spec.w), int(spec.h)
+	if w <= 0 || h <= 0 {
+		return
+	}
+	if s.rotateAnim.clip.IsEmpty() || s.rotateAnim.clip.Image.Bounds().Dx() != w || s.rotateAnim.clip.Image.Bounds().Dy() != h {
+		s.rotateAnim.clip = draws.CreateImage(spec.w, spec.h)
+	}
+	s.rotateAnim.clip.Clear()
+
+	localSpec := screenSpec{w: spec.w, h: spec.h}
+	drawImageInSpec(s.rotateAnim.clip.Image, s.rotateAnim.snapshot.Image, localSpec, theta, alpha)
+
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Translate(spec.x, spec.y)
+	screen.DrawImage(s.rotateAnim.clip.Image, op)
+}
+
+func drawImageInSpec(screen *ebiten.Image, src *ebiten.Image, spec screenSpec, theta float64, alpha float32) {
+	b := src.Bounds()
+	srcW := float64(b.Dx())
+	srcH := float64(b.Dy())
+	if srcW <= 0 || srcH <= 0 || spec.w <= 0 || spec.h <= 0 {
+		return
+	}
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Translate(-srcW/2, -srcH/2)
+	op.GeoM.Scale(spec.w/srcW, spec.h/srcH)
+	op.GeoM.Rotate(theta)
+	op.GeoM.Translate(spec.x+spec.w/2, spec.y+spec.h/2)
+	op.ColorScale.ScaleAlpha(alpha)
+	screen.DrawImage(src, op)
 }
 
 func (s *simulator) drawTriggers(dst draws.Image) {
@@ -779,7 +962,10 @@ func (s *simulator) drawTriggers(dst draws.Image) {
 	s.homeButtonText.Draw(dst)
 	s.recentsButtonText.Draw(dst)
 
-	s.actionPanel.Draw(dst)
+	for i := range s.actionGroups {
+		s.actionGroups[i].title.Draw(dst)
+		s.actionGroups[i].panel.Draw(dst)
+	}
 }
 
 func (s *simulator) Layout(_, _ int) (int, int) { return simW, simH }

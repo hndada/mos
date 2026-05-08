@@ -24,9 +24,9 @@ type LifecyclePhase int
 
 const (
 	PhaseCreated   LifecyclePhase = iota // window instantiated
-	PhaseResumed                          // Showing → Shown (fully open)
-	PhasePaused                           // Shown → Hiding (close animation begins)
-	PhaseDestroyed                        // purged from the window list
+	PhaseResumed                         // Showing → Shown (fully open)
+	PhasePaused                          // Shown → Hiding (close animation begins)
+	PhaseDestroyed                       // purged from the window list
 )
 
 // Lifecycle is published by the windowing server at each app phase transition.
@@ -43,7 +43,7 @@ func (Lifecycle) Kind() Kind { return KindLifecycle }
 type NavAction int
 
 const (
-	NavBack    NavAction = iota
+	NavBack NavAction = iota
 	NavHome
 	NavRecents
 )
@@ -64,6 +64,7 @@ const (
 	TopicLocale    SystemTopic = "locale"     // Value: string ("en", "ko", …)
 	TopicBattery   SystemTopic = "battery"    // Value: int (0–100)
 	TopicNetwork   SystemTopic = "network"    // Value: bool (connected)
+	TopicAOD       SystemTopic = "aod"        // Value: bool
 )
 
 // System is published when a system setting or sensor reading changes.

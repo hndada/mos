@@ -7,6 +7,14 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
+	"github.com/hndada/mos/ui"
+)
+
+const (
+	galleryPad     = 18.0
+	galleryGap     = 12.0
+	galleryTop     = 64.0
+	galleryColumns = 2
 )
 
 // GalleryApp shows in-memory screenshots as a 2-column thumbnail grid.
@@ -16,6 +24,7 @@ type GalleryApp struct {
 	ctx     mosapp.Context
 	screenW float64
 	screenH float64
+	scroll  ui.ScrollBox
 
 	title draws.Text
 	empty draws.Text
@@ -42,16 +51,22 @@ func newGalleryApp(ctx mosapp.Context) mosapp.Content {
 	empty.SetFace(emptyOpts)
 	empty.Locate(screenW/2, screenH/2, draws.CenterMiddle)
 
-	return &GalleryApp{
+	g := &GalleryApp{
 		ctx:     ctx,
 		screenW: screenW,
 		screenH: screenH,
 		title:   title,
 		empty:   empty,
 	}
+	g.scroll.Size = draws.XY{X: screenW, Y: screenH - galleryTop}
+	g.scroll.Locate(0, galleryTop, draws.LeftTop)
+	return g
 }
 
-func (g *GalleryApp) Update(_ mosapp.Frame) {}
+func (g *GalleryApp) Update(frame mosapp.Frame) {
+	g.layoutScroll(len(g.ctx.Screenshots()))
+	g.scroll.Update(frame)
+}
 
 func (g *GalleryApp) Draw(dst draws.Image) {
 	shots := g.ctx.Screenshots()
@@ -67,8 +82,21 @@ func (g *GalleryApp) Draw(dst draws.Image) {
 	if g.needsRebuild(shots) {
 		g.rebuild(shots)
 	}
-	for _, thumb := range g.thumbs {
-		thumb.Draw(dst)
+	g.layoutScroll(len(shots))
+	off := g.scroll.Offset()
+	thumbH := g.thumbH()
+	rows := (len(g.thumbs) + galleryColumns - 1) / galleryColumns
+	startRow, endRow := ui.VisibleRange(off.Y, g.screenH-galleryTop, thumbH+galleryGap, rows, 1)
+	for row := startRow; row < endRow; row++ {
+		for col := 0; col < galleryColumns; col++ {
+			idx := row*galleryColumns + col
+			if idx >= len(g.thumbs) {
+				break
+			}
+			thumb := g.thumbs[idx]
+			thumb.Position.Y -= off.Y
+			thumb.Draw(dst)
+		}
 	}
 }
 
@@ -78,26 +106,34 @@ func (g *GalleryApp) needsRebuild(shots []draws.Image) bool {
 		g.thumbScreenH != g.screenH
 }
 
+func (g *GalleryApp) thumbW() float64 {
+	return (g.screenW - galleryPad*2 - galleryGap) / galleryColumns
+}
+
+func (g *GalleryApp) thumbH() float64 {
+	return g.thumbW() * 0.72
+}
+
+func (g *GalleryApp) layoutScroll(count int) {
+	thumbH := g.thumbH()
+	rows := (count + galleryColumns - 1) / galleryColumns
+	g.scroll.ContentSize = draws.XY{
+		X: g.screenW,
+		Y: max(0, float64(rows)*(thumbH+galleryGap)-galleryGap),
+	}
+}
+
 func (g *GalleryApp) rebuild(shots []draws.Image) {
-	const (
-		pad     = 18.0
-		gap     = 12.0
-		top     = 64.0
-		columns = 2
-	)
-	thumbW := (g.screenW - pad*2 - gap) / columns
-	thumbH := thumbW * 0.72
+	thumbW := g.thumbW()
+	thumbH := g.thumbH()
 
 	g.thumbs = g.thumbs[:0]
 	for i := len(shots) - 1; i >= 0; i-- {
 		visIdx := len(shots) - 1 - i
-		col := visIdx % columns
-		row := visIdx / columns
-		x := pad + float64(col)*(thumbW+gap)
-		y := top + float64(row)*(thumbH+gap)
-		if y >= g.screenH {
-			break
-		}
+		col := visIdx % galleryColumns
+		row := visIdx / galleryColumns
+		x := galleryPad + float64(col)*(thumbW+galleryGap)
+		y := galleryTop + float64(row)*(thumbH+galleryGap)
 
 		frame := draws.CreateImage(thumbW, thumbH)
 		frame.Fill(color.RGBA{235, 235, 240, 255})

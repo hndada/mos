@@ -18,8 +18,9 @@ const (
 )
 
 var (
-	controlPanelBgColor    = color.RGBA{0, 0, 0, 150}
-	controlPanelButtonBg   = color.RGBA{255, 255, 255, 48}
+	controlPanelBgColor  = color.RGBA{0, 0, 0, 150}
+	controlPanelButtonBg = color.RGBA{255, 255, 255, 48}
+	controlPanelText     = color.RGBA{18, 18, 18, 255}
 )
 
 // ControlAction is one entry in a ControlPanel: the label shown on the
@@ -72,11 +73,10 @@ func NewControlPanel(x, y float64, cols int, actions []ControlAction) ControlPan
 		row := i / cols
 		bx := x + ControlPanelPad + float64(col)*(ControlPanelButtonW+ControlPanelGap)
 		by := y + ControlPanelPad + float64(row)*(ControlPanelButtonH+ControlPanelGap)
-		entries[i] = controlPanelEntry{
-			btn: NewButton(a.Label, controlPanelFont, bx, by,
-				ControlPanelButtonW, ControlPanelButtonH, controlPanelButtonBg),
-			handler: a.Handler,
-		}
+		btn := NewButton(a.Label, controlPanelFont, bx, by,
+			ControlPanelButtonW, ControlPanelButtonH, controlPanelButtonBg)
+		btn.SetLabelColor(controlPanelText)
+		entries[i] = controlPanelEntry{btn: btn, handler: a.Handler}
 	}
 
 	return ControlPanel{bg: bg, entries: entries}

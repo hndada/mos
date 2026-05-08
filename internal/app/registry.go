@@ -32,6 +32,14 @@ func New(appID string, ctx Context) Content {
 	return f(ctx)
 }
 
+// Has reports whether appID is registered.
+func Has(appID string) bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	_, ok := registry[appID]
+	return ok
+}
+
 // IDs returns the set of all registered app IDs (order unspecified).
 func IDs() []string {
 	mu.RLock()

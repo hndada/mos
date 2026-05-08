@@ -14,12 +14,15 @@ const (
 	AppIDSettings  = "settings"
 	AppIDCall      = "call"
 	AppIDSceneTest = "scene-test"
+	AppIDHello     = "hello"
+	AppIDShowcase  = "showcase"
+	AppIDMessage   = "message"
 )
 
 // App wraps an app.Content instance with OS-level metadata (ID, accent colour,
-// context). It is the unit the Window owns. The actual content code runs on
-// the Window's goroutine — see windowProc — so the only methods the main
-// goroutine invokes on `content` are Draw (under the lock-step barrier).
+// context). It is the unit the Window owns. Window updates and draws content
+// on the main goroutine; Context methods still go through windowProc so app
+// code requests OS actions indirectly.
 type App struct {
 	ID    string
 	Color color.RGBA
@@ -40,8 +43,8 @@ type AppState struct {
 
 // NewApp instantiates an App for the given ID using ctx.
 // It first queries the app registry; if the ID is unregistered a colour-fill
-// placeholder is used instead. OnCreate is NOT invoked here — the Window's
-// goroutine fires it immediately on startup.
+// placeholder is used instead. OnCreate is NOT invoked here; the Window fires
+// it immediately on startup.
 func NewApp(id string, clr color.RGBA, ctx *windowContext) *App {
 	if id == "" {
 		id = AppIDColor
@@ -82,14 +85,19 @@ func appLabel(id string) string {
 		return "Call"
 	case AppIDSceneTest:
 		return "Scene Test"
+	case AppIDHello:
+		return "Hello"
+	case AppIDShowcase:
+		return "Showcase"
+	case AppIDMessage:
+		return "Messages"
 	default:
 		return "App"
 	}
 }
 
-// Draw renders the app's content onto dst. Called on the main goroutine,
-// always after the goroutine has acked its tick — so app state mutated
-// during Update is fully visible here without a lock.
+// Draw renders the app's content onto dst. Called on the main goroutine after
+// Update, so app state mutated during Update is fully visible without a lock.
 func (a *App) Draw(dst draws.Image) {
 	if a.content != nil {
 		a.content.Draw(dst)

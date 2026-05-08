@@ -82,25 +82,32 @@ func (s *Slider) Update(frame mosapp.Frame) {
 }
 
 func (s Slider) Draw(dst draws.Image) {
-	// Track — tinted with the SurfaceWidget theme colour.
+	s.DrawOffset(dst, 0)
+}
+
+// DrawOffset draws the slider shifted vertically without changing its hitbox.
+func (s Slider) DrawOffset(dst draws.Image, dy float64) {
+	// Track - tinted with the SurfaceWidget theme colour.
 	track := s.track
+	track.Position.Y += dy
 	track.ColorScale.Scale(theme.ScaleOf(theme.Active().Color(theme.SurfaceWidget)))
 	track.Draw(dst)
 
-	// Filled portion — tinted with the Accent theme colour; clipped to Value.
+	// Filled portion - tinted with the Accent theme colour; clipped to Value.
 	if s.Value > 0 {
 		filled := s.filled
+		filled.Position.Y += dy
 		filled.ColorScale.Scale(theme.ScaleOf(theme.Active().Color(theme.Accent)))
 		filled.Size.X = s.Value * s.w
 		filled.Draw(dst)
 	}
 
-	// Thumb — tinted with the Knob theme colour.
+	// Thumb - tinted with the Knob theme colour.
 	thumb := s.thumb
 	thumb.ColorScale.Scale(theme.ScaleOf(theme.Active().Color(theme.Knob)))
 	thumb.Position = draws.XY{
 		X: s.thumbCX() - SliderThumbR,
-		Y: s.y - SliderThumbR,
+		Y: s.y - SliderThumbR + dy,
 	}
 	thumb.Draw(dst)
 }

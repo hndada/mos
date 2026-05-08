@@ -49,6 +49,7 @@ type GestureDetector struct {
 	tracking bool
 	dragging bool
 	pressed  bool // currently held (after Down inside Area, before Up)
+	pointer  int
 	start    draws.XY
 	current  draws.XY
 }
@@ -76,15 +77,16 @@ func (g *GestureDetector) Update(frame mosapp.Frame) GestureEvent {
 	for _, ev := range frame.Events {
 		switch ev.Kind {
 		case input.EventDown:
-			if g.Area.In(ev.Pos) {
+			if !g.tracking && g.Area.In(ev.Pos) {
 				g.tracking = true
 				g.dragging = false
 				g.pressed = true
+				g.pointer = ev.Pointer
 				g.start = ev.Pos
 				g.current = ev.Pos
 			}
 		case input.EventMove:
-			if g.tracking {
+			if g.tracking && ev.Pointer == g.pointer {
 				g.current = ev.Pos
 				d := ev.Pos.Sub(g.start)
 				if math.Hypot(d.X, d.Y) >= DragThresholdPx {
@@ -93,7 +95,7 @@ func (g *GestureDetector) Update(frame mosapp.Frame) GestureEvent {
 				}
 			}
 		case input.EventUp:
-			if g.tracking {
+			if g.tracking && ev.Pointer == g.pointer {
 				g.tracking = false
 				g.pressed = false
 				g.current = ev.Pos

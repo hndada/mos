@@ -5,6 +5,7 @@ import (
 
 	mosapp "github.com/hndada/mos/internal/app"
 	"github.com/hndada/mos/internal/draws"
+	"github.com/hndada/mos/ui/theme"
 )
 
 // Button is a tappable rectangle with a text label.
@@ -32,6 +33,12 @@ func NewButton(label string, fontSize, x, y, w, h float64, bg color.RGBA) Button
 		bg:      sp,
 		label:   t,
 	}
+}
+
+// SetLabelColor sets the button label colour explicitly.
+func (b *Button) SetLabelColor(c color.RGBA) {
+	r, g, bl, a := theme.ScaleOf(c)
+	b.label.ColorScale.Scale(r, g, bl, a)
 }
 
 // Update returns true on the frame the button is released as a tap.

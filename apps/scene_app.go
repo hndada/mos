@@ -15,6 +15,7 @@ import (
 const sceneTransitionDuration = 520 * time.Millisecond
 
 type SceneTest struct {
+	ctx     mosapp.Context
 	screenW float64
 	screenH float64
 
@@ -25,6 +26,11 @@ type SceneTest struct {
 	to      int
 	anim    tween.Tween
 }
+
+func (s *SceneTest) OnCreate(ctx mosapp.Context) { s.ctx = ctx }
+func (s *SceneTest) OnResume()                   { s.scheduleNextFrame() }
+func (s *SceneTest) OnPause()                    {}
+func (s *SceneTest) OnDestroy()                  {}
 
 func NewSceneTest(screenW, screenH float64) *SceneTest {
 	scenes := []draws.Image{
@@ -91,7 +97,7 @@ func newTestScene(screenW, screenH float64, n int, title, subtitle string, bg, a
 func sceneAnim(from, to float64) tween.Tween {
 	var tw tween.Tween
 	tw.MaxLoop = 1
-	tw.Add(from, to-from, sceneTransitionDuration, tween.EaseOutExponential)
+	tw.Add(from, to-from, sceneTransitionDuration, tween.EaseLinear)
 	tw.Start()
 	return tw
 }
@@ -100,6 +106,8 @@ func (s *SceneTest) Update(frame mosapp.Frame) {
 	s.anim.Update()
 	if s.anim.IsFinished() {
 		s.index = s.to
+	} else {
+		s.scheduleNextFrame()
 	}
 	pressed := false
 	for _, ev := range frame.Events {
@@ -117,6 +125,14 @@ func (s *SceneTest) Update(frame mosapp.Frame) {
 	s.from = s.index
 	s.to = (s.index + 1) % len(s.scenes)
 	s.anim = sceneAnim(0, 1)
+	s.scheduleNextFrame()
+}
+
+func (s *SceneTest) scheduleNextFrame() {
+	if s.ctx == nil || s.anim.IsFinished() {
+		return
+	}
+	s.ctx.WakeAt(time.Now())
 }
 
 func (s *SceneTest) Draw(dst draws.Image) {

@@ -50,20 +50,19 @@ func (l Lifecycle) String() string {
 }
 
 // Window owns its off-screen canvas. All visual properties (position, size,
-// alpha) are driven by a single WindowAnim, whose retargetable transitions
+// alpha) are driven by a single anim, whose retargetable transitions
 // allow Dismiss to interrupt an in-flight open without snapping.
 //
 // Multi-window layout: in fullscreen mode the canvas fills the screen and
 // placement equals the screen rect. In split/pip/float modes the canvas is
-// still the full screen size but the WindowAnim targets a smaller rect;
+// still the full screen size but the anim targets a smaller rect;
 // the compositor scales the canvas to fit that rect, and input events are
 // reverse-transformed from display-rect coords back to canvas-rect coords
-// before being sent to the app goroutine (see ToCanvasFrame).
+// before being sent to the app (see ToCanvasFrame).
 //
-// The app's content is hosted on a per-window goroutine via windowProc;
-// this Window struct only exposes main-thread operations (animation,
-// composition, lifecycle dispatch). See window_proc.go for the boundary
-// protocol and its real-OS analogue.
+// The app's content is updated and drawn on the main goroutine. Context
+// methods enqueue commands through windowProc so app code can still request
+// OS actions without mutating server state directly.
 //
 // Canvas caching: canvasDirty is true when the canvas must be repainted via
 // app.Draw before the next composite. It is set true on construction (first
@@ -81,15 +80,16 @@ type Window struct {
 	iconSize    draws.XY
 	screenW     float64
 	screenH     float64
-	anim        WindowAnim
-	mode        WindowMode
-	placement   WindowPlacement
+	anim        anim
+	mode        Mode
+	placement   Placement
+	captured    map[int]bool
 	canvasDirty bool // true = updateCanvas must run before next composite
 }
 
-// NewWindow creates a window, starts its goroutine, and waits for OnCreate
-// to ack before returning. The window animates open from iconPos / iconSize.
-func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW, screenH float64, ws *WindowingServer) *Window {
+// NewWindow creates a window and runs OnCreate before returning. The window
+// animates open from iconPos / iconSize.
+func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW, screenH float64, ws *Server) *Window {
 	canvas := draws.CreateImage(screenW, screenH)
 	canvas.Fill(clr)
 	if appID == "" {
@@ -98,6 +98,7 @@ func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW
 	proc := newWindowProc()
 	ctx := newWindowContext(ws, proc)
 	app := NewApp(appID, clr, ctx)
+	ctx.appID = app.ID
 	w := &Window{
 		app:         app,
 		ctx:         ctx,
@@ -109,21 +110,21 @@ func NewWindow(iconPos, iconSize draws.XY, clr color.RGBA, appID string, screenW
 		iconSize:    iconSize,
 		screenW:     screenW,
 		screenH:     screenH,
-		mode:        WindowModeFullscreen,
+		mode:        ModeFullscreen,
 		placement:   fullscreenPlacement(screenW, screenH),
+		captured:    make(map[int]bool),
 		canvasDirty: true, // paint the initial frame immediately
 	}
 	w.anim.OpenFrom(iconPos, iconSize, draws.XY{X: screenW, Y: screenH}, DurationOpening)
 
-	// Start the goroutine; OnCreate runs there and acks before we return.
-	go proc.run(app.content, ctx)
-	<-proc.ackCh
+	proc.create(app.content, ctx)
+	proc.drain(ws, w)
 	return w
 }
 
 // NewRestoredWindow creates a window that is immediately fully open (no open animation).
 // Used to re-display the active app after a display-mode change.
-func NewRestoredWindow(state AppState, screenW, screenH float64, ws *WindowingServer) *Window {
+func NewRestoredWindow(state AppState, screenW, screenH float64, ws *Server) *Window {
 	if state.ID == "" {
 		state.ID = AppIDColor
 	}
@@ -132,6 +133,7 @@ func NewRestoredWindow(state AppState, screenW, screenH float64, ws *WindowingSe
 	proc := newWindowProc()
 	ctx := newWindowContext(ws, proc)
 	app := NewApp(state.ID, state.Color, ctx)
+	ctx.appID = app.ID
 	w := &Window{
 		app:         app,
 		ctx:         ctx,
@@ -143,17 +145,16 @@ func NewRestoredWindow(state AppState, screenW, screenH float64, ws *WindowingSe
 		iconSize:    draws.XY{X: screenW, Y: screenH},
 		screenW:     screenW,
 		screenH:     screenH,
-		mode:        WindowModeFullscreen,
+		mode:        ModeFullscreen,
 		placement:   fullscreenPlacement(screenW, screenH),
+		captured:    make(map[int]bool),
 		canvasDirty: true, // paint the initial frame immediately
 	}
 	w.anim.SnapOpen(draws.XY{X: screenW, Y: screenH})
 
-	// Start goroutine; OnCreate acks. The app is already fully visible, so
-	// fire OnResume right after.
-	go proc.run(app.content, ctx)
-	<-proc.ackCh
-	proc.sendTick(tickMsg{kind: tickResume})
+	proc.create(app.content, ctx)
+	proc.resume(app.content)
+	proc.drain(ws, w)
 	return w
 }
 
@@ -164,35 +165,36 @@ func (w *Window) Dismiss() {
 
 // DismissTo animates the window closed, shrinking to an arbitrary target.
 // Safe to call mid-open: the underlying Transition rebases from the current
-// value, so the reversal is continuous. Fires OnPause on the goroutine.
+// value, so the reversal is continuous. Fires OnPause on the app.
 func (w *Window) DismissTo(targetCenter, targetSize draws.XY) {
 	if w.lifecycle != LifecycleShown && w.lifecycle != LifecycleShowing {
 		return
 	}
 	w.lifecycle = LifecycleHiding
 	w.anim.CloseTo(targetCenter, targetSize, DurationClosing)
-	w.proc.sendTick(tickMsg{kind: tickPause})
+	w.proc.pause(w.app.content)
+	w.proc.drain(w.ctx.ws, w)
 }
 
-// Destroy fires OnDestroy on the goroutine, joins it, and marks the window
-// as destroyed. After this the windowProc is finished; cmdCh is left open
-// (any late writes from app-spawned goroutines are silently buffered or
-// dropped).
+// Destroy fires OnDestroy and marks the window as destroyed. cmdCh is left
+// open so late writes from app-owned goroutines are silently buffered or
+// dropped instead of panicking.
 func (w *Window) Destroy() {
-	w.proc.sendTick(tickMsg{kind: tickDestroy})
-	close(w.proc.tickCh)
+	w.proc.destroy(w.app.content)
+	w.proc.drain(w.ctx.ws, w)
 	w.lifecycle = LifecycleDestroyed
 }
 
 // Update advances animation state and, when an open animation completes,
-// fires OnResume on the goroutine. The actual app Update is driven by the
+// fires OnResume on the app. The actual app Update is driven by the
 // windowing server via UpdateApp — not here.
 func (w *Window) Update() {
 	switch w.lifecycle {
 	case LifecycleShowing:
 		if w.anim.Done() {
 			w.lifecycle = LifecycleShown
-			w.proc.sendTick(tickMsg{kind: tickResume})
+			w.proc.resume(w.app.content)
+			w.proc.drain(w.ctx.ws, w)
 			// OnResume may change visual state; mark canvas dirty so the
 			// first fully-open frame reflects it.
 			w.canvasDirty = true
@@ -204,13 +206,12 @@ func (w *Window) Update() {
 	}
 }
 
-// UpdateApp routes the input frame to the goroutine and waits for the tick
-// to ack. Call only when lifecycle == LifecycleShown. After the ack the
-// server reads w.proc.shouldClose / drainLaunch() to handle command results.
+// UpdateApp routes the input frame to the app. Call only when lifecycle ==
+// LifecycleShown. After Update, the server drains queued Context commands.
 // It also marks the canvas dirty: the app's Update may have changed state
 // that Draw must reflect.
 func (w *Window) UpdateApp(frame mosapp.Frame) {
-	w.proc.sendTick(tickMsg{kind: tickUpdate, frame: frame})
+	w.proc.update(w.app.content, frame)
 	w.proc.drain(w.ctx.ws, w)
 	w.canvasDirty = true
 }
@@ -234,11 +235,11 @@ func (w *Window) HistoryEntry() apps.HistoryEntry {
 
 func (w *Window) AppState() AppState { return AppState{ID: w.app.ID, Color: w.clr} }
 func (w *Window) AppID() string      { return w.app.ID }
-func (w *Window) Mode() WindowMode   { return w.mode }
+func (w *Window) Mode() Mode         { return w.mode }
 
 // SetPlacement retargets the window animation to a new display rect and
 // records the final placement. The mode field must be set by the caller.
-func (w *Window) SetPlacement(p WindowPlacement, dur time.Duration) {
+func (w *Window) SetPlacement(p Placement, dur time.Duration) {
 	w.placement = p
 	w.anim.Retarget(p.Center, p.Size, dur)
 }

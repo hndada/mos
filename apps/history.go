@@ -16,7 +16,7 @@ const MaxHistory = 50
 const (
 	hCardMaxWFrac = 0.84 // max card width as fraction of screenW
 	hCardMaxHFrac = 0.65 // max card height as fraction of screenH
-	hStepFrac     = 0.74 // step between cards; < hCardWFrac ??cards overlap + adjacent cards peek
+	hStepFrac     = 0.74 // step between cards; less than hCardWFrac so adjacent cards peek
 	cardBorderW   = 3.0
 	durationShow  = 350 * time.Millisecond
 )
@@ -315,6 +315,7 @@ func (h *DefaultHistory) Draw(dst draws.Image) {
 	ov.Draw(dst)
 
 	off := h.scroll.Offset()
+	start, end := ui.VisibleRange(off.X, h.screenW, h.hStep, len(h.cards), 1)
 	// Determine which card is closest to center so it renders on top.
 	focusIdx := 0
 	if h.hStep > 0 && len(h.cards) > 1 {
@@ -327,17 +328,18 @@ func (h *DefaultHistory) Draw(dst draws.Image) {
 		focusIdx = f
 	}
 	// First pass: all cards except the focused one.
-	for i, card := range h.cards {
+	for i := start; i < end; i++ {
 		if i == focusIdx {
 			continue
 		}
+		card := h.cards[i]
 		c := card.bg
 		c.Position = c.Position.Sub(draws.XY{X: off.X})
 		c.ColorScale.ScaleAlpha(a)
 		c.Draw(dst)
 	}
 	// Second pass: focused card on top.
-	if len(h.cards) > 0 {
+	if focusIdx >= start && focusIdx < end {
 		c := h.cards[focusIdx].bg
 		c.Position = c.Position.Sub(draws.XY{X: off.X})
 		c.ColorScale.ScaleAlpha(a)

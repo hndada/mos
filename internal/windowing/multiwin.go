@@ -12,7 +12,7 @@ package windowing
 //	               macOS NSWindow free positioning
 //
 // All layout state lives in multiWindowManager, which is owned by the
-// WindowingServer. It is updated once per frame (Update*) and drawn once
+// Server. It is updated once per frame (Update*) and drawn once
 // per frame (Draw*) on the main goroutine.
 
 import (
@@ -37,26 +37,26 @@ const (
 	splitDragHitThickness = 32.0 // wider grab area for the divider
 
 	// PiP
-	pipFracW     = 0.38  // pip width as fraction of screen width
-	pipMargin    = 14.0  // minimum distance from screen edge
+	pipFracW     = 0.38 // pip width as fraction of screen width
+	pipMargin    = 14.0 // minimum distance from screen edge
 	pipSnapSpeed = 120 * time.Millisecond
 
 	// Freeform
-	freeformTitleH       = 28.0  // title-bar height in screen pixels
-	freeformDefaultFracW = 0.60  // default window width as fraction of screen
-	freeformDefaultFracH = 0.65  // default window height as fraction of screen
-	freeformStagger      = 28.0  // per-window stagger offset
+	freeformTitleH       = 28.0 // title-bar height in screen pixels
+	freeformDefaultFracW = 0.60 // default window width as fraction of screen
+	freeformDefaultFracH = 0.65 // default window height as fraction of screen
+	freeformStagger      = 28.0 // per-window stagger offset
 )
 
 // ── Mode enum ────────────────────────────────────────────────────────────────
 
-type multiWindowMode int
+type multiMode int
 
 const (
-	multiModeNone     multiWindowMode = iota
-	multiModeSplit                    // two windows divided by a draggable bar
-	multiModePip                      // small overlay + fullscreen background
-	multiModeFreeform                 // any number of draggable floating windows
+	multiModeNone     multiMode = iota
+	multiModeSplit              // two windows divided by a draggable bar
+	multiModePip                // small overlay + fullscreen background
+	multiModeFreeform           // any number of draggable floating windows
 )
 
 // ── Axis / Corner helpers ─────────────────────────────────────────────────────
@@ -80,10 +80,10 @@ const (
 
 // ── multiWindowManager ───────────────────────────────────────────────────────
 
-// multiWindowManager handles all multi-window state for one WindowingServer.
+// multiWindowManager handles all multi-window state for one Server.
 // It is nil when all windows are fullscreen.
 type multiWindowManager struct {
-	mode    multiWindowMode
+	mode    multiMode
 	screenW float64
 	screenH float64
 
@@ -93,6 +93,7 @@ type multiWindowManager struct {
 	splitAxis      SplitAxis
 	splitFrac      float64 // 0..1, fraction of screen for primary
 	splitDragging  bool
+	splitDragID    int
 	splitDragStart float64 // screen-axis coordinate at drag start
 	splitDragFrac  float64 // splitFrac at drag start
 
@@ -102,6 +103,7 @@ type multiWindowManager struct {
 	pipWindow   *Window
 	pipCorner   pipCorner
 	pipDragging bool
+	pipDragID   int
 	pipDragOff  draws.XY // offset from pip center to pointer at drag start
 
 	pipBorderImg draws.Image // 1-pixel accent; scaled at draw time
@@ -112,6 +114,7 @@ type multiWindowManager struct {
 
 	// ── Freeform ───────────────────────────────────────────────────────────
 	freeformDragWindow *Window
+	freeformDragID     int
 	freeformDragOffset draws.XY // offset from window center to pointer
 
 	freeformTitleNormalImg  draws.Image // unfocused title bar colour
@@ -151,31 +154,35 @@ func (m *multiWindowManager) enterSplit(primary, secondary *Window) {
 	m.mode = multiModeSplit
 	m.splitPrimary = primary
 	m.splitSecondary = secondary
-	m.splitAxis = SplitAxisVertical
+	if m.screenH > m.screenW {
+		m.splitAxis = SplitAxisHorizontal
+	} else {
+		m.splitAxis = SplitAxisVertical
+	}
 	m.splitFrac = 0.5
 	m.applySplitPlacements(DurationMultiWin)
 }
 
-func (m *multiWindowManager) splitPlacements() (primary, secondary WindowPlacement) {
+func (m *multiWindowManager) splitPlacements() (primary, secondary Placement) {
 	if m.splitAxis == SplitAxisVertical {
 		pW := m.screenW*m.splitFrac - splitGap/2
 		sW := m.screenW*(1-m.splitFrac) - splitGap/2
-		primary = WindowPlacement{
+		primary = Placement{
 			Center: draws.XY{X: pW / 2, Y: m.screenH / 2},
 			Size:   draws.XY{X: pW, Y: m.screenH},
 		}
-		secondary = WindowPlacement{
+		secondary = Placement{
 			Center: draws.XY{X: m.screenW - sW/2, Y: m.screenH / 2},
 			Size:   draws.XY{X: sW, Y: m.screenH},
 		}
 	} else {
 		pH := m.screenH*m.splitFrac - splitGap/2
 		sH := m.screenH*(1-m.splitFrac) - splitGap/2
-		primary = WindowPlacement{
+		primary = Placement{
 			Center: draws.XY{X: m.screenW / 2, Y: pH / 2},
 			Size:   draws.XY{X: m.screenW, Y: pH},
 		}
-		secondary = WindowPlacement{
+		secondary = Placement{
 			Center: draws.XY{X: m.screenW / 2, Y: m.screenH - sH/2},
 			Size:   draws.XY{X: m.screenW, Y: sH},
 		}
@@ -185,9 +192,9 @@ func (m *multiWindowManager) splitPlacements() (primary, secondary WindowPlaceme
 
 func (m *multiWindowManager) applySplitPlacements(dur time.Duration) {
 	p, s := m.splitPlacements()
-	m.splitPrimary.mode = WindowModeSplit
+	m.splitPrimary.mode = ModeSplit
 	m.splitPrimary.placement = p
-	m.splitSecondary.mode = WindowModeSplit
+	m.splitSecondary.mode = ModeSplit
 	m.splitSecondary.placement = s
 	if dur > 0 {
 		m.splitPrimary.anim.Retarget(p.Center, p.Size, dur)
@@ -221,8 +228,9 @@ func (m *multiWindowManager) updateSplit(events []input.Event) []input.Event {
 	for _, ev := range events {
 		switch ev.Kind {
 		case input.EventDown:
-			if m.inSplitDivider(ev.Pos) {
+			if !m.splitDragging && m.inSplitDivider(ev.Pos) {
 				m.splitDragging = true
+				m.splitDragID = ev.Pointer
 				if m.splitAxis == SplitAxisVertical {
 					m.splitDragStart = ev.Pos.X
 				} else {
@@ -233,7 +241,7 @@ func (m *multiWindowManager) updateSplit(events []input.Event) []input.Event {
 				remaining = append(remaining, ev)
 			}
 		case input.EventMove:
-			if m.splitDragging {
+			if m.splitDragging && ev.Pointer == m.splitDragID {
 				var coord, total float64
 				if m.splitAxis == SplitAxisVertical {
 					coord, total = ev.Pos.X, m.screenW
@@ -248,7 +256,7 @@ func (m *multiWindowManager) updateSplit(events []input.Event) []input.Event {
 				remaining = append(remaining, ev)
 			}
 		case input.EventUp:
-			if m.splitDragging {
+			if m.splitDragging && ev.Pointer == m.splitDragID {
 				m.splitDragging = false
 			} else {
 				remaining = append(remaining, ev)
@@ -279,7 +287,7 @@ func (m *multiWindowManager) exitSplit() {
 		if w == nil {
 			continue
 		}
-		w.mode = WindowModeFullscreen
+		w.mode = ModeFullscreen
 		w.placement = fp
 		w.anim.Retarget(fp.Center, fp.Size, DurationMultiWin)
 	}
@@ -289,7 +297,7 @@ func (m *multiWindowManager) exitSplit() {
 
 // ── PiP ──────────────────────────────────────────────────────────────────────
 
-func pipPlacement(corner pipCorner, screenW, screenH float64) WindowPlacement {
+func pipPlacement(corner pipCorner, screenW, screenH float64) Placement {
 	w := screenW * pipFracW
 	h := w * (screenH / screenW)
 	var cx, cy float64
@@ -303,7 +311,7 @@ func pipPlacement(corner pipCorner, screenW, screenH float64) WindowPlacement {
 	case pipCornerTopLeft:
 		cx, cy = w/2+pipMargin, h/2+pipMargin
 	}
-	return WindowPlacement{
+	return Placement{
 		Center: draws.XY{X: cx, Y: cy},
 		Size:   draws.XY{X: w, Y: h},
 	}
@@ -314,7 +322,7 @@ func (m *multiWindowManager) enterPip(pip *Window, corner pipCorner) {
 	m.pipWindow = pip
 	m.pipCorner = corner
 	p := pipPlacement(corner, m.screenW, m.screenH)
-	pip.mode = WindowModePip
+	pip.mode = ModePip
 	pip.placement = p
 	pip.anim.Retarget(p.Center, p.Size, DurationMultiWin)
 }
@@ -340,8 +348,9 @@ func (m *multiWindowManager) updatePip(events []input.Event) {
 
 		switch ev.Kind {
 		case input.EventDown:
-			if inPip {
+			if !m.pipDragging && inPip {
 				m.pipDragging = true
+				m.pipDragID = ev.Pointer
 				m.pipDragOff = draws.XY{X: ev.Pos.X - pc.X, Y: ev.Pos.Y - pc.Y}
 				m.pipFrameEvents = append(m.pipFrameEvents, ev)
 			} else {
@@ -349,20 +358,20 @@ func (m *multiWindowManager) updatePip(events []input.Event) {
 			}
 
 		case input.EventMove:
-			if m.pipDragging {
+			if m.pipDragging && ev.Pointer == m.pipDragID {
 				newCX := ev.Pos.X - m.pipDragOff.X
 				newCY := ev.Pos.Y - m.pipDragOff.Y
 				hw, hh := ps.X/2, ps.Y/2
 				newCX = clampF(newCX, hw+pipMargin, m.screenW-hw-pipMargin)
 				newCY = clampF(newCY, hh+pipMargin, m.screenH-hh-pipMargin)
-				pip.placement = WindowPlacement{Center: draws.XY{X: newCX, Y: newCY}, Size: ps}
+				pip.placement = Placement{Center: draws.XY{X: newCX, Y: newCY}, Size: ps}
 				pip.anim.SnapTo(draws.XY{X: newCX, Y: newCY}, ps)
 			} else {
 				m.mainFrameEvents = append(m.mainFrameEvents, ev)
 			}
 
 		case input.EventUp:
-			if m.pipDragging {
+			if m.pipDragging && ev.Pointer == m.pipDragID {
 				m.pipDragging = false
 				// Snap to the nearest screen corner.
 				m.pipCorner = m.nearestPipCorner(pip.anim.Pos())
@@ -413,7 +422,7 @@ func (m *multiWindowManager) drawPip(dst draws.Image) {
 func (m *multiWindowManager) exitPip() {
 	if m.pipWindow != nil {
 		fp := fullscreenPlacement(m.screenW, m.screenH)
-		m.pipWindow.mode = WindowModeFullscreen
+		m.pipWindow.mode = ModeFullscreen
 		m.pipWindow.placement = fp
 		m.pipWindow.anim.Retarget(fp.Center, fp.Size, DurationMultiWin)
 	}
@@ -438,11 +447,11 @@ func (m *multiWindowManager) enterFreeform(windows []*Window) {
 		if cy+baseH/2 > m.screenH {
 			cy = m.screenH - baseH/2
 		}
-		p := WindowPlacement{
+		p := Placement{
 			Center: draws.XY{X: cx, Y: cy},
 			Size:   draws.XY{X: baseW, Y: baseH},
 		}
-		w.mode = WindowModeFloat
+		w.mode = ModeFloat
 		w.placement = p
 		w.anim.Retarget(p.Center, p.Size, DurationMultiWin)
 	}
@@ -473,8 +482,9 @@ func (m *multiWindowManager) updateFreeform(events []input.Event, windows []*Win
 				if w.lifecycle != LifecycleShown {
 					continue
 				}
-				if m.inTitleBar(w, ev.Pos) {
+				if m.freeformDragWindow == nil && m.inTitleBar(w, ev.Pos) {
 					m.freeformDragWindow = w
+					m.freeformDragID = ev.Pointer
 					c := w.anim.Pos()
 					m.freeformDragOffset = draws.XY{X: ev.Pos.X - c.X, Y: ev.Pos.Y - c.Y}
 					newFocus = w
@@ -486,21 +496,21 @@ func (m *multiWindowManager) updateFreeform(events []input.Event, windows []*Win
 				remaining = append(remaining, ev)
 			}
 		case input.EventMove:
-			if m.freeformDragWindow != nil {
+			if m.freeformDragWindow != nil && ev.Pointer == m.freeformDragID {
 				w := m.freeformDragWindow
 				sz := w.anim.Size()
 				newCX := ev.Pos.X - m.freeformDragOffset.X
 				newCY := ev.Pos.Y - m.freeformDragOffset.Y
 				newCX = clampF(newCX, sz.X/2, m.screenW-sz.X/2)
 				newCY = clampF(newCY, sz.Y/2, m.screenH-sz.Y/2)
-				p := WindowPlacement{Center: draws.XY{X: newCX, Y: newCY}, Size: sz}
+				p := Placement{Center: draws.XY{X: newCX, Y: newCY}, Size: sz}
 				w.placement = p
 				w.anim.SnapTo(p.Center, p.Size)
 			} else {
 				remaining = append(remaining, ev)
 			}
 		case input.EventUp:
-			if m.freeformDragWindow != nil {
+			if m.freeformDragWindow != nil && ev.Pointer == m.freeformDragID {
 				m.freeformDragWindow = nil
 			} else {
 				remaining = append(remaining, ev)
@@ -522,7 +532,7 @@ func (m *multiWindowManager) drawFreeform(dst draws.Image, windows []*Window, fo
 		if w.lifecycle != LifecycleShown && w.lifecycle != LifecycleShowing {
 			continue
 		}
-		if w.mode != WindowModeFloat {
+		if w.mode != ModeFloat {
 			continue
 		}
 		c := w.anim.Pos()
@@ -559,10 +569,10 @@ func (m *multiWindowManager) drawFreeform(dst draws.Image, windows []*Window, fo
 func (m *multiWindowManager) exitFreeform(windows []*Window) {
 	fp := fullscreenPlacement(m.screenW, m.screenH)
 	for _, w := range windows {
-		if w.mode != WindowModeFloat {
+		if w.mode != ModeFloat {
 			continue
 		}
-		w.mode = WindowModeFullscreen
+		w.mode = ModeFullscreen
 		w.placement = fp
 		w.anim.Retarget(fp.Center, fp.Size, DurationMultiWin)
 	}
@@ -617,9 +627,11 @@ func clampF(v, lo, hi float64) float64 {
 }
 
 // filterEventsByRect returns events whose Pos is inside the given rect.
-// EventMove and EventUp are also filtered so a window never receives stray
-// events from pointer activity in another window.
-func filterEventsByRect(events []input.Event, center, size draws.XY) []input.Event {
+// A pointer that starts inside the rect is captured until its Up event, so
+// drag gestures keep receiving Move/Up even after the finger leaves the rect.
+// Capture is per pointer ID, which allows multiple touches to be routed
+// independently.
+func filterEventsByRect(events []input.Event, center, size draws.XY, captured map[int]bool) []input.Event {
 	if len(events) == 0 {
 		return nil
 	}
@@ -629,9 +641,27 @@ func filterEventsByRect(events []input.Event, center, size draws.XY) []input.Eve
 	maxY := minY + size.Y
 	var out []input.Event
 	for _, ev := range events {
-		if ev.Pos.X >= minX && ev.Pos.X < maxX &&
-			ev.Pos.Y >= minY && ev.Pos.Y < maxY {
-			out = append(out, ev)
+		inside := ev.Pos.X >= minX && ev.Pos.X < maxX &&
+			ev.Pos.Y >= minY && ev.Pos.Y < maxY
+		switch ev.Kind {
+		case input.EventDown:
+			if inside {
+				captured[ev.Pointer] = true
+				out = append(out, ev)
+			}
+		case input.EventMove:
+			if captured[ev.Pointer] {
+				out = append(out, ev)
+			}
+		case input.EventUp:
+			if captured[ev.Pointer] {
+				out = append(out, ev)
+				delete(captured, ev.Pointer)
+			}
+		default:
+			if inside {
+				out = append(out, ev)
+			}
 		}
 	}
 	return out

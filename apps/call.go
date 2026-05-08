@@ -12,6 +12,7 @@ import (
 )
 
 type Call struct {
+	ctx     mosapp.Context
 	screenW float64
 	screenH float64
 	started time.Time
@@ -26,6 +27,11 @@ type Call struct {
 	endTap   ui.TriggerButton
 	ended    bool
 }
+
+func (c *Call) OnCreate(ctx mosapp.Context) { c.ctx = ctx }
+func (c *Call) OnResume()                   { c.scheduleNextTick() }
+func (c *Call) OnPause()                    {}
+func (c *Call) OnDestroy()                  {}
 
 func NewCall(screenW, screenH float64) *Call {
 	c := &Call{
@@ -97,6 +103,15 @@ func (c *Call) Update(frame mosapp.Frame) {
 	if elapsed >= 2*time.Second {
 		c.state.Text = "Ringing"
 	}
+	c.scheduleNextTick()
+}
+
+func (c *Call) scheduleNextTick() {
+	if c.ctx == nil || c.ended {
+		return
+	}
+	now := time.Now()
+	c.ctx.WakeAt(now.Truncate(time.Second).Add(time.Second))
 }
 
 func (c *Call) ShouldClose() bool {

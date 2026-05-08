@@ -1,8 +1,7 @@
 // Package comp provides a declarative component model for building UIs.
 //
-// Design: identical to React / Jetpack Compose — you describe what the UI
-// should look like (Build returns a Node tree), and the Renderer handles
-// layout, input routing, and drawing each frame.
+// Design: inspired by React and Jetpack Compose: Build returns a component
+// tree, and the Renderer handles layout, input routing, and drawing each frame.
 //
 //	type CounterApp struct{ n int }
 //
@@ -84,8 +83,8 @@ type placed struct {
 	rect     Rect
 	path     string
 	drawFn   func(dst draws.Image, ia IA) // nil for pure containers
-	onClick  func()                        // non-nil → widget is tappable
-	isFocus  bool                          // non-false → widget accepts keyboard focus
+	onClick  func()                       // non-nil means widget is tappable
+	isFocus  bool                         // true means widget accepts keyboard focus
 	children []*placed
 }
 
