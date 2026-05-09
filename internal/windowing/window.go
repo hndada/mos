@@ -54,11 +54,10 @@ func (l Lifecycle) String() string {
 // allow Dismiss to interrupt an in-flight open without snapping.
 //
 // Multi-window layout: in fullscreen mode the canvas fills the screen and
-// placement equals the screen rect. In split/pip/float modes the canvas is
-// still the full screen size but the anim targets a smaller rect;
-// the compositor scales the canvas to fit that rect, and input events are
-// reverse-transformed from display-rect coords back to canvas-rect coords
-// before being sent to the app (see ToCanvasFrame).
+// placement equals the screen rect. In split mode the canvas stays full-size
+// and is clipped into the split pane. PiP/float modes scale the canvas into
+// the current rect. Input events are transformed back to canvas coordinates
+// before being sent to the app (see ToCanvasFrame and ToSplitCanvasFrame).
 //
 // The app's content is updated and drawn on the main goroutine. Context
 // methods enqueue commands through windowProc so app code can still request
@@ -279,6 +278,34 @@ func (w *Window) ToCanvasFrame(frame mosapp.Frame, screenW, screenH float64) mos
 	return out
 }
 
+// ToSplitCanvasFrame translates screen-space coordinates to full-size canvas
+// coordinates for split panes. Unlike ToCanvasFrame, it does not scale; split
+// panes are clipped windows onto the native-size app surface.
+func (w *Window) ToSplitCanvasFrame(frame mosapp.Frame) mosapp.Frame {
+	center := w.anim.Pos()
+	size := w.anim.Size()
+	minX := center.X - size.X/2
+	minY := center.Y - size.Y/2
+
+	out := mosapp.Frame{
+		Cursor: draws.XY{
+			X: frame.Cursor.X - minX,
+			Y: frame.Cursor.Y - minY,
+		},
+	}
+	if len(frame.Events) > 0 {
+		out.Events = make([]input.Event, len(frame.Events))
+		for i, ev := range frame.Events {
+			ev.Pos = draws.XY{
+				X: ev.Pos.X - minX,
+				Y: ev.Pos.Y - minY,
+			}
+			out.Events[i] = ev
+		}
+	}
+	return out
+}
+
 // ContainsScreenPos reports whether a screen-space position falls inside the
 // window's current animated display rect.
 func (w *Window) ContainsScreenPos(pos draws.XY) bool {
@@ -303,10 +330,33 @@ func (w *Window) Draw(dst draws.Image) {
 		w.updateCanvas()
 		w.canvasDirty = false
 	}
+	if w.mode == ModeSplit {
+		w.drawSplit(dst)
+		return
+	}
 	s := draws.NewSprite(w.canvas)
 	s.Position = w.anim.Pos()
 	s.Size = w.anim.Size()
 	s.Aligns = draws.CenterMiddle
+	s.ColorScale.ScaleAlpha(float32(w.anim.Alpha()))
+	s.Draw(dst)
+}
+
+func (w *Window) drawSplit(dst draws.Image) {
+	center := w.anim.Pos()
+	size := w.anim.Size()
+	paneW := min(size.X, w.screenW)
+	paneH := min(size.Y, w.screenH)
+	if paneW <= 0 || paneH <= 0 {
+		return
+	}
+
+	sub := w.canvas.SubImage(0, 0, int(paneW), int(paneH))
+	if sub.IsEmpty() {
+		return
+	}
+	s := draws.NewSprite(sub)
+	s.Locate(center.X-size.X/2, center.Y-size.Y/2, draws.LeftTop)
 	s.ColorScale.ScaleAlpha(float32(w.anim.Alpha()))
 	s.Draw(dst)
 }

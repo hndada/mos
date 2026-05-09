@@ -17,6 +17,10 @@ const (
 	AppIDHello     = "hello"
 	AppIDShowcase  = "showcase"
 	AppIDMessage   = "message"
+	AppIDFlow      = "flow"
+	AppIDClips     = "clips"
+	AppIDRide      = "ride"
+	AppIDMarket    = "market"
 )
 
 // App wraps an app.Content instance with OS-level metadata (ID, accent colour,
@@ -91,6 +95,14 @@ func appLabel(id string) string {
 		return "Showcase"
 	case AppIDMessage:
 		return "Messages"
+	case AppIDFlow:
+		return "Flow"
+	case AppIDClips:
+		return "Clips"
+	case AppIDRide:
+		return "Ride"
+	case AppIDMarket:
+		return "Market"
 	default:
 		return "App"
 	}

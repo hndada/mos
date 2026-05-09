@@ -2,10 +2,12 @@ package apps
 
 import (
 	"image/color"
+	"time"
 
 	"github.com/hajimehoshi/ebiten/v2/vector"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/input"
+	"github.com/hndada/mos/internal/tween"
 )
 
 type homeIcon struct {
@@ -36,6 +38,9 @@ type DefaultHome struct {
 	openFolder  int
 	folderBg    draws.Sprite
 	folderTitle draws.Text
+	folderAnim  tween.Transition
+	folderFrom  draws.Sprite
+	folderClose bool
 	tappedPos   draws.XY
 	tappedSize  draws.XY
 	tappedColor color.RGBA
@@ -51,6 +56,10 @@ var homeApps = []homeAppSpec{
 	{id: "hello", name: "Hello", kind: "hello", clr: color.RGBA{88, 86, 214, 255}},
 	{id: "showcase", name: "Showcase", kind: "showcase", clr: color.RGBA{175, 82, 222, 255}},
 	{id: "message", name: "Messages", kind: "message", clr: color.RGBA{255, 45, 85, 255}},
+	{id: "flow", name: "Flow", kind: "flow", clr: color.RGBA{255, 72, 112, 255}},
+	{id: "clips", name: "Clips", kind: "clips", clr: color.RGBA{255, 45, 85, 255}},
+	{id: "ride", name: "Ride", kind: "ride", clr: color.RGBA{0, 160, 110, 255}},
+	{id: "market", name: "Market", kind: "market", clr: color.RGBA{255, 149, 0, 255}},
 	{id: "color", name: "Color", kind: "color", clr: color.RGBA{90, 200, 250, 255}},
 }
 
@@ -60,6 +69,10 @@ var homeFolders = []homeFolderSpec{
 		{id: "settings", name: "Settings", kind: "settings", clr: color.RGBA{95, 99, 110, 255}},
 		{id: "call", name: "Call", kind: "call", clr: color.RGBA{52, 199, 89, 255}},
 		{id: "message", name: "Messages", kind: "message", clr: color.RGBA{255, 45, 85, 255}},
+		{id: "flow", name: "Flow", kind: "flow", clr: color.RGBA{255, 72, 112, 255}},
+		{id: "clips", name: "Clips", kind: "clips", clr: color.RGBA{255, 45, 85, 255}},
+		{id: "ride", name: "Ride", kind: "ride", clr: color.RGBA{0, 160, 110, 255}},
+		{id: "market", name: "Market", kind: "market", clr: color.RGBA{255, 149, 0, 255}},
 	}},
 	{name: "Lab", apps: []homeAppSpec{
 		{id: "scene-test", name: "Scene", kind: "scene", clr: color.RGBA{255, 149, 0, 255}},
@@ -241,6 +254,27 @@ func drawIconGlyph(dst draws.Image, s float32, kind string) {
 		vector.StrokeLine(dst.Image, s*.38, s*.64, s*.29, s*.76, s*.08, white, true)
 		vector.StrokeLine(dst.Image, s*.32, s*.43, s*.68, s*.43, s*.035, color.RGBA{255, 45, 85, 255}, true)
 		vector.StrokeLine(dst.Image, s*.32, s*.53, s*.58, s*.53, s*.035, color.RGBA{255, 45, 85, 255}, true)
+	case "flow":
+		vector.DrawFilledCircle(dst.Image, s*.50, s*.50, s*.25, white, true)
+		vector.StrokeLine(dst.Image, s*.38, s*.50, s*.50, s*.62, s*.06, color.RGBA{255, 72, 112, 255}, true)
+		vector.StrokeLine(dst.Image, s*.50, s*.62, s*.66, s*.38, s*.06, color.RGBA{255, 72, 112, 255}, true)
+		vector.DrawFilledCircle(dst.Image, s*.36, s*.36, s*.045, color.RGBA{255, 72, 112, 255}, true)
+	case "clips":
+		vector.DrawFilledCircle(dst.Image, s*.50, s*.50, s*.25, white, true)
+		vector.StrokeLine(dst.Image, s*.44, s*.38, s*.44, s*.62, s*.08, color.RGBA{255, 45, 85, 255}, true)
+		vector.StrokeLine(dst.Image, s*.44, s*.38, s*.64, s*.50, s*.08, color.RGBA{255, 45, 85, 255}, true)
+		vector.StrokeLine(dst.Image, s*.44, s*.62, s*.64, s*.50, s*.08, color.RGBA{255, 45, 85, 255}, true)
+	case "ride":
+		vector.StrokeLine(dst.Image, s*.28, s*.68, s*.72, s*.32, s*.09, white, true)
+		vector.DrawFilledCircle(dst.Image, s*.28, s*.68, s*.08, white, true)
+		vector.DrawFilledCircle(dst.Image, s*.72, s*.32, s*.08, white, true)
+		vector.DrawFilledCircle(dst.Image, s*.50, s*.50, s*.055, color.RGBA{0, 160, 110, 255}, true)
+	case "market":
+		drawRoundedRect(dst, s*.28, s*.36, s*.44, s*.34, s*.04, white)
+		vector.StrokeLine(dst.Image, s*.36, s*.36, s*.42, s*.25, s*.05, white, true)
+		vector.StrokeLine(dst.Image, s*.64, s*.36, s*.58, s*.25, s*.05, white, true)
+		vector.DrawFilledCircle(dst.Image, s*.40, s*.78, s*.035, white, true)
+		vector.DrawFilledCircle(dst.Image, s*.62, s*.78, s*.035, white, true)
 	case "color":
 		vector.DrawFilledCircle(dst.Image, s*.48, s*.50, s*.26, white, true)
 		vector.DrawFilledCircle(dst.Image, s*.39, s*.41, s*.04, color.RGBA{255, 70, 70, 255}, true)
@@ -253,6 +287,10 @@ func drawIconGlyph(dst draws.Image, s float32, kind string) {
 
 func (h *DefaultHome) Update() {
 	h.hasTap = false
+	if h.folderClose && h.folderAnim.Done() {
+		h.openFolder = -1
+		h.folderClose = false
+	}
 	if !input.IsMouseButtonJustPressed(input.MouseButtonLeft) {
 		return
 	}
@@ -260,6 +298,9 @@ func (h *DefaultHome) Update() {
 	cursor := draws.XY{X: x, Y: y}
 
 	if h.openFolder >= 0 {
+		if h.folderClose {
+			return
+		}
 		for _, icon := range h.folderIcons[h.openFolder] {
 			if icon.sprite.In(cursor) {
 				h.tappedPos = icon.sprite.Position
@@ -272,7 +313,7 @@ func (h *DefaultHome) Update() {
 			}
 		}
 		if !h.folderBg.In(cursor) {
-			h.openFolder = -1
+			h.closeFolder()
 		}
 		return
 	}
@@ -280,7 +321,7 @@ func (h *DefaultHome) Update() {
 	for _, icon := range h.icons {
 		if icon.sprite.In(cursor) {
 			if icon.folder >= 0 {
-				h.openFolder = icon.folder
+				h.openFolderFrom(icon)
 				return
 			}
 			h.tappedPos = icon.sprite.Position
@@ -293,23 +334,68 @@ func (h *DefaultHome) Update() {
 	}
 }
 
+func (h *DefaultHome) openFolderFrom(icon homeIcon) {
+	h.openFolder = icon.folder
+	h.folderFrom = icon.sprite
+	h.folderClose = false
+	h.folderAnim.Snap(0)
+	h.folderAnim.To(1, 180*time.Millisecond, tween.EaseOutExponential)
+}
+
+func (h *DefaultHome) closeFolder() {
+	h.folderClose = true
+	h.folderAnim.To(0, 140*time.Millisecond, tween.EaseOutExponential)
+}
+
 func (h *DefaultHome) TappedIcon() (pos, size draws.XY, clr color.RGBA, appID string, ok bool) {
 	return h.tappedPos, h.tappedSize, h.tappedColor, h.tappedAppID, h.hasTap
 }
 
 func (h *DefaultHome) Draw(dst draws.Image) {
 	for _, icon := range h.icons {
-		icon.sprite.Draw(dst)
-		icon.label.Draw(dst)
+		drawHomeIcon(dst, icon, 1)
 	}
 	if h.openFolder < 0 {
 		return
 	}
-	h.folderBg.Draw(dst)
+	p := h.folderAnim.Value()
+	bg := h.animatedFolderBg(p)
+	bg.ColorScale.ScaleAlpha(float32(max(0, min(1, p*1.4))))
+	bg.Draw(dst)
+
+	contentAlpha := max(0, min(1, (p-0.28)/0.72))
 	h.folderTitle.Text = h.folders[h.openFolder].name
-	h.folderTitle.Draw(dst)
+	title := h.folderTitle
+	title.ColorScale.Scale(1, 1, 1, float32(contentAlpha))
+	title.Draw(dst)
 	for _, icon := range h.folderIcons[h.openFolder] {
-		icon.sprite.Draw(dst)
-		icon.label.Draw(dst)
+		drawHomeIcon(dst, icon, contentAlpha)
 	}
+}
+
+func (h *DefaultHome) animatedFolderBg(p float64) draws.Sprite {
+	p = max(0, min(1, p))
+	bg := h.folderBg
+	fromPos := h.folderFrom.Position
+	fromSize := h.folderFrom.Size
+	bg.Position = draws.XY{
+		X: fromPos.X + (h.folderBg.Position.X-fromPos.X)*p,
+		Y: fromPos.Y + (h.folderBg.Position.Y-fromPos.Y)*p,
+	}
+	bg.Size = draws.XY{
+		X: fromSize.X + (h.folderBg.Size.X-fromSize.X)*p,
+		Y: fromSize.Y + (h.folderBg.Size.Y-fromSize.Y)*p,
+	}
+	return bg
+}
+
+func drawHomeIcon(dst draws.Image, icon homeIcon, alpha float64) {
+	alpha = max(0, min(1, alpha))
+	sp := icon.sprite
+	sp.ColorScale.ScaleAlpha(float32(alpha))
+	sp.Draw(dst)
+
+	label := icon.label
+	label.ColorScale.Scale(1, 1, 1, float32(alpha))
+	label.Draw(dst)
 }

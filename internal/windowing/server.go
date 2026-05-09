@@ -404,6 +404,17 @@ func (ws *Server) PickPhoto() (draws.Image, bool) {
 	return ws.screenshots[len(ws.screenshots)-1], true
 }
 
+func (ws *Server) CapturePhoto(appID string) (draws.Image, bool) {
+	if ws.RequestPermission(mosapp.PermissionCamera) != mosapp.PermissionGranted {
+		return draws.Image{}, false
+	}
+	img := draws.CreateImage(ws.ScreenW, ws.ScreenH)
+	img.Fill(appColor(appID))
+	ws.PostNotice(mosapp.Notice{Title: "Camera", Body: "Captured simulated photo"})
+	ws.log("camera capture " + appID)
+	return img, true
+}
+
 func (ws *Server) CanLaunch(appID string) bool {
 	return mosapp.Has(appID) || appID == AppIDColor
 }
@@ -810,6 +821,14 @@ func appColor(appID string) color.RGBA {
 		return color.RGBA{175, 82, 222, 255}
 	case AppIDMessage:
 		return color.RGBA{255, 45, 85, 255}
+	case AppIDFlow:
+		return color.RGBA{255, 72, 112, 255}
+	case AppIDClips:
+		return color.RGBA{255, 45, 85, 255}
+	case AppIDRide:
+		return color.RGBA{0, 160, 110, 255}
+	case AppIDMarket:
+		return color.RGBA{255, 149, 0, 255}
 	default:
 		return color.RGBA{50, 70, 110, 255}
 	}
@@ -1279,6 +1298,9 @@ func (ws *Server) frameForWindow(w *Window, cursor draws.XY, events []input.Even
 	// Fullscreen windows need no coordinate transform (canvas == screen).
 	if w.mode == ModeFullscreen {
 		return mosapp.Frame{Cursor: cursor, Events: windowEvents}
+	}
+	if w.mode == ModeSplit {
+		return w.ToSplitCanvasFrame(mosapp.Frame{Cursor: cursor, Events: windowEvents})
 	}
 	// Non-fullscreen: translate from display-rect space to canvas space.
 	return w.ToCanvasFrame(

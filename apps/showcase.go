@@ -52,6 +52,7 @@ func NewShowcaseApp(ctx mosapp.Context) mosapp.Content {
 // This is the only place that "knows" what the screen looks like.
 func (a *ShowcaseApp) Build() comp.Node {
 	return comp.Column(0,
+		comp.Spacer(a.ctx.SafeArea().Top),
 		// ── App bar ─────────────────────────────────────────────────────
 		comp.SizedBox(0, 56,
 			comp.PaddingAll(16,

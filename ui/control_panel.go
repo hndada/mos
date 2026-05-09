@@ -10,11 +10,11 @@ import (
 // ControlPanel sizing constants. Exported so callers can reason about the
 // panel footprint when laying out surrounding chrome.
 const (
-	ControlPanelButtonW = 68.0
-	ControlPanelButtonH = 22.0
-	ControlPanelGap     = 4.0
+	ControlPanelButtonW = 76.0
+	ControlPanelButtonH = 26.0
+	ControlPanelGap     = 5.0
 	ControlPanelPad     = 8.0
-	controlPanelFont    = 10.0
+	controlPanelFont    = 11.0
 )
 
 var (

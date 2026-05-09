@@ -19,6 +19,10 @@ func init() {
 	})
 
 	mosapp.Register("message", NewMessageApp)
+	mosapp.Register("flow", NewFlowApp)
+	mosapp.Register("clips", NewClipsApp)
+	mosapp.Register("ride", NewRideApp)
+	mosapp.Register("market", NewMarketApp)
 
 	mosapp.Register("scene-test", func(ctx mosapp.Context) mosapp.Content {
 		sz := ctx.ScreenSize()

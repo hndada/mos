@@ -12,7 +12,7 @@ import (
 	"github.com/hndada/mos/internal/tween"
 )
 
-const sceneTransitionDuration = 520 * time.Millisecond
+const sceneTransitionDuration = 640 * time.Millisecond
 
 type SceneTest struct {
 	ctx     mosapp.Context
@@ -97,9 +97,27 @@ func newTestScene(screenW, screenH float64, n int, title, subtitle string, bg, a
 func sceneAnim(from, to float64) tween.Tween {
 	var tw tween.Tween
 	tw.MaxLoop = 1
-	tw.Add(from, to-from, sceneTransitionDuration, tween.EaseLinear)
+	tw.Add(from, to-from, sceneTransitionDuration, easeInOutCubic)
 	tw.Start()
 	return tw
+}
+
+func easeInOutCubic(t time.Duration, b, c float64, d time.Duration) float64 {
+	if d <= 0 {
+		return b + c
+	}
+	x := t.Seconds() / d.Seconds()
+	if x <= 0 {
+		return b
+	}
+	if x >= 1 {
+		return b + c
+	}
+	if x < 0.5 {
+		return b + c*4*x*x*x
+	}
+	u := -2*x + 2
+	return b + c*(1-u*u*u/2)
 }
 
 func (s *SceneTest) Update(frame mosapp.Frame) {
@@ -139,19 +157,20 @@ func (s *SceneTest) Draw(dst draws.Image) {
 	if len(s.scenes) == 0 {
 		return
 	}
+	top := s.ctx.SafeArea().Top
 	if s.anim.IsFinished() {
 		sp := s.sprites[s.index]
-		sp.Locate(0, 0, draws.LeftTop)
+		sp.Locate(0, top, draws.LeftTop)
 		sp.Draw(dst)
 		return
 	}
 
 	t := s.anim.Value()
 	out := s.sprites[s.from]
-	out.Locate(-s.screenW*t, 0, draws.LeftTop)
+	out.Locate(-s.screenW*t, top, draws.LeftTop)
 	out.Draw(dst)
 
 	in := s.sprites[s.to]
-	in.Locate(s.screenW*(1-t), 0, draws.LeftTop)
+	in.Locate(s.screenW*(1-t), top, draws.LeftTop)
 	in.Draw(dst)
 }

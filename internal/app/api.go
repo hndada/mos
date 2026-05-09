@@ -258,6 +258,7 @@ type Context interface {
 	SaveFile(name string, data []byte) (string, error)
 	PickFile() (path string, data []byte, ok bool)
 	PickPhoto() (draws.Image, bool)
+	CapturePhoto() (draws.Image, bool)
 
 	// Preference reads and writes small per-app key/value settings. Keys are
 	// namespaced by AppID so apps cannot collide with each other.

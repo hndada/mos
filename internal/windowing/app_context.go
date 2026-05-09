@@ -229,6 +229,9 @@ func (c *windowContext) PickFile() (string, []byte, bool) {
 func (c *windowContext) PickPhoto() (draws.Image, bool) {
 	return c.ws.PickPhoto()
 }
+func (c *windowContext) CapturePhoto() (draws.Image, bool) {
+	return c.ws.CapturePhoto(c.appID)
+}
 
 func (c *windowContext) Preference(key string) (string, bool) {
 	return c.ws.Preference(c.appID, key)

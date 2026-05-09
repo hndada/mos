@@ -67,7 +67,7 @@ func groups() [displayModeCount]displayGroup {
 	fold7Cover := WH{904, 2316}
 	fold7Main := WH{1812, 2176}
 
-	const sc = 0.24
+	const sc = 0.26
 	const gap = 32.0
 
 	barW, barH := s26.W*sc, s26.H*sc
@@ -390,10 +390,10 @@ func newSimulator() *simulator {
 	return s
 }
 
-const actionPanelMargin = 12.0
+const actionPanelMargin = 10.0
 const actionPanelCols = 2
-const actionPanelTitleGap = 4.0
-const actionPanelSectionGap = 10.0
+const actionPanelTitleGap = 3.0
+const actionPanelSectionGap = 7.0
 
 func actionPanelWidth() float64 {
 	return ui.ControlPanelButtonW*float64(actionPanelCols) +

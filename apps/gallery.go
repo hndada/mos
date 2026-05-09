@@ -33,6 +33,7 @@ type GalleryApp struct {
 	thumbCount   int
 	thumbScreenW float64
 	thumbScreenH float64
+	thumbTop     float64
 }
 
 func newGalleryApp(ctx mosapp.Context) mosapp.Content {
@@ -65,6 +66,9 @@ func newGalleryApp(ctx mosapp.Context) mosapp.Content {
 
 func (g *GalleryApp) Update(frame mosapp.Frame) {
 	g.layoutScroll(len(g.ctx.Screenshots()))
+	top := g.contentTop()
+	g.scroll.Size = draws.XY{X: g.screenW, Y: max(0, g.screenH-top)}
+	g.scroll.Locate(0, top, draws.LeftTop)
 	g.scroll.Update(frame)
 }
 
@@ -72,6 +76,8 @@ func (g *GalleryApp) Draw(dst draws.Image) {
 	shots := g.ctx.Screenshots()
 	dst.Fill(color.RGBA{18, 19, 24, 255})
 
+	top := g.contentTop()
+	g.title.Locate(18, max(18, g.ctx.SafeArea().Top+12), draws.LeftTop)
 	g.title.Text = fmt.Sprintf("Gallery  %d", len(shots))
 	g.title.Draw(dst)
 
@@ -86,7 +92,7 @@ func (g *GalleryApp) Draw(dst draws.Image) {
 	off := g.scroll.Offset()
 	thumbH := g.thumbH()
 	rows := (len(g.thumbs) + galleryColumns - 1) / galleryColumns
-	startRow, endRow := ui.VisibleRange(off.Y, g.screenH-galleryTop, thumbH+galleryGap, rows, 1)
+	startRow, endRow := ui.VisibleRange(off.Y, g.screenH-top, thumbH+galleryGap, rows, 1)
 	for row := startRow; row < endRow; row++ {
 		for col := 0; col < galleryColumns; col++ {
 			idx := row*galleryColumns + col
@@ -103,7 +109,12 @@ func (g *GalleryApp) Draw(dst draws.Image) {
 func (g *GalleryApp) needsRebuild(shots []draws.Image) bool {
 	return g.thumbCount != len(shots) ||
 		g.thumbScreenW != g.screenW ||
-		g.thumbScreenH != g.screenH
+		g.thumbScreenH != g.screenH ||
+		g.thumbTop != g.contentTop()
+}
+
+func (g *GalleryApp) contentTop() float64 {
+	return max(galleryTop, g.ctx.SafeArea().Top+52)
 }
 
 func (g *GalleryApp) thumbW() float64 {
@@ -133,7 +144,7 @@ func (g *GalleryApp) rebuild(shots []draws.Image) {
 		col := visIdx % galleryColumns
 		row := visIdx / galleryColumns
 		x := galleryPad + float64(col)*(thumbW+galleryGap)
-		y := galleryTop + float64(row)*(thumbH+galleryGap)
+		y := g.contentTop() + float64(row)*(thumbH+galleryGap)
 
 		frame := draws.CreateImage(thumbW, thumbH)
 		frame.Fill(color.RGBA{235, 235, 240, 255})
@@ -157,4 +168,5 @@ func (g *GalleryApp) rebuild(shots []draws.Image) {
 	g.thumbCount = len(shots)
 	g.thumbScreenW = g.screenW
 	g.thumbScreenH = g.screenH
+	g.thumbTop = g.contentTop()
 }
