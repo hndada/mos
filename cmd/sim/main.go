@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hndada/mos/apps"
 	mosapp "github.com/hndada/mos/internal/app"
+	"github.com/hndada/mos/internal/apps"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/event"
 	"github.com/hndada/mos/internal/input"
@@ -224,6 +226,8 @@ type simulator struct {
 	display           windowing.Display
 	help              draws.Text
 	log               simLog
+	shell             simShell
+	powerMenu         simPowerMenu
 	historyEntries    []apps.HistoryEntry // persisted across screen/mode changes
 	screenshots       []draws.Image       // persisted in memory across screen/mode changes
 	captureNext       bool
@@ -248,6 +252,8 @@ type simulator struct {
 	// AOD renders a low-power clock when the display is "powered off."
 	aod        *apps.DefaultAOD
 	aodEnabled bool
+	volume     int
+	volumeShow time.Time
 
 	// bus is the current OS-wide event bus (recreated on applyMode).
 	bus *event.Bus
@@ -266,7 +272,7 @@ type simulator struct {
 	rotateAnim rotateAnimation
 }
 
-const helpString = "P: Power   X: Lock   1/2/3: Bar-Flip-Fold   S: Screen   O: Rotate   B/Esc: Back   N: Curtain   K: Keys   V: Ring   W: Split   I: PiP   G: Float   Tab: Focus   L/F: Log"
+const helpString = "`: Shell   P: Power   X: Lock   1/2/3: Bar-Flip-Fold   S: Screen   O: Rotate   B/Esc: Back   N: Curtain   K: Keys   V: Ring   W: Split   I: PiP   G: Float   Tab: Focus   L/F: Log"
 
 type simAction struct {
 	Label   string
@@ -290,11 +296,12 @@ type rotateAnimation struct {
 
 const (
 	controlPanelH = 38.0
-	logMaxLines   = 7
+	logMaxLines   = 10
+	logHistoryMax = 200
 	logX          = 12.0
 	logY          = 12.0
-	logW          = 280.0
-	logH          = 160.0
+	logW          = 340.0
+	logH          = 220.0
 	logGap        = 28.0
 )
 
@@ -303,8 +310,34 @@ const rotateAnimDuration = 320 * time.Millisecond
 type simLog struct {
 	bg      draws.Sprite
 	lines   []draws.Text
-	entries []string
+	entries []simLogEntry
 	visible bool
+}
+
+type simLogEntry struct {
+	stamp  string
+	msg    string
+	repeat int
+}
+
+type simShell struct {
+	active bool
+	input  string
+	bg     draws.Sprite
+	prompt draws.Text
+}
+
+type simPowerMenu struct {
+	visible bool
+	bg      draws.Sprite
+	title   draws.Text
+	buttons []simPowerButton
+}
+
+type simPowerButton struct {
+	label string
+	btn   ui.TriggerButton
+	text  draws.Text
 }
 
 func newSimLog() simLog {
@@ -320,7 +353,7 @@ func newSimLog() simLog {
 		lines[i] = draws.NewText("")
 		lines[i].SetFace(opts)
 		lines[i].ColorScale.Scale(1, 1, 1, 1)
-		lines[i].Locate(logX+12, logY+12+float64(i)*19, draws.LeftTop)
+		lines[i].Locate(logX+12, logY+12+float64(i)*20, draws.LeftTop)
 	}
 
 	return simLog{
@@ -330,12 +363,102 @@ func newSimLog() simLog {
 	}
 }
 
+func newSimShell() simShell {
+	img := draws.CreateImage(simW-40, 34)
+	img.Fill(color.RGBA{6, 8, 12, 230})
+	bg := draws.NewSprite(img)
+	bg.Locate(20, simH-56, draws.LeftTop)
+
+	opts := draws.NewFaceOptions()
+	opts.Size = 14
+	prompt := draws.NewText("")
+	prompt.SetFace(opts)
+	prompt.Locate(32, simH-47, draws.LeftTop)
+	return simShell{bg: bg, prompt: prompt}
+}
+
+func newSimPowerMenu() simPowerMenu {
+	w, h := 280.0, 214.0
+	x, y := (simW-w)/2, (simH-h)/2
+	bg := draws.CreateImage(w, h)
+	bg.Fill(color.RGBA{12, 14, 20, 238})
+	bgSp := draws.NewSprite(bg)
+	bgSp.Locate(x, y, draws.LeftTop)
+
+	titleOpts := draws.NewFaceOptions()
+	titleOpts.Size = 18
+	title := draws.NewText("Power")
+	title.SetFace(titleOpts)
+	title.Locate(x+w/2, y+28, draws.CenterMiddle)
+
+	labels := []string{"Lock", "Sleep", "Restart", "Cancel"}
+	buttons := make([]simPowerButton, len(labels))
+	opts := draws.NewFaceOptions()
+	opts.Size = 13
+	for i, label := range labels {
+		by := y + 58 + float64(i)*36
+		txt := draws.NewText(label)
+		txt.SetFace(opts)
+		txt.Locate(x+w/2, by+15, draws.CenterMiddle)
+		buttons[i] = simPowerButton{
+			label: label,
+			btn:   ui.NewTriggerButton(x+34, by, w-68, 30),
+			text:  txt,
+		}
+	}
+	return simPowerMenu{bg: bgSp, title: title, buttons: buttons}
+}
+
+func (pm *simPowerMenu) Draw(dst draws.Image) {
+	if !pm.visible {
+		return
+	}
+	pm.bg.Draw(dst)
+	pm.title.Draw(dst)
+	for i := range pm.buttons {
+		b := &pm.buttons[i]
+		img := draws.CreateImage(b.btn.W(), b.btn.H())
+		img.Fill(color.RGBA{255, 255, 255, 32})
+		sp := draws.NewSprite(img)
+		sp.Locate(b.btn.X(), b.btn.Y(), draws.LeftTop)
+		sp.Draw(dst)
+		b.text.Draw(dst)
+	}
+}
+
+func (sh *simShell) Toggle() {
+	sh.active = !sh.active
+}
+
+func (sh *simShell) Draw(dst draws.Image) {
+	if !sh.active {
+		return
+	}
+	sh.bg.Draw(dst)
+	sh.prompt.Text = "mos> " + sh.input
+	sh.prompt.Draw(dst)
+}
+
 func (l *simLog) Add(msg string) {
 	stamp := time.Now().Format("15:04:05.000")
-	l.entries = append(l.entries, stamp+"  "+msg)
-	if len(l.entries) > logMaxLines {
-		copy(l.entries, l.entries[len(l.entries)-logMaxLines:])
-		l.entries = l.entries[:logMaxLines]
+	fmt.Println(stamp + "  " + msg)
+
+	last := len(l.entries) - 1
+	if last >= 0 && l.entries[last].msg == msg {
+		l.entries[last].stamp = stamp
+		l.entries[last].repeat++
+		l.refreshLines()
+		return
+	}
+
+	l.entries = append(l.entries, simLogEntry{
+		stamp:  stamp,
+		msg:    msg,
+		repeat: 1,
+	})
+	if len(l.entries) > logHistoryMax {
+		copy(l.entries, l.entries[len(l.entries)-logHistoryMax:])
+		l.entries = l.entries[:logHistoryMax]
 	}
 
 	l.refreshLines()
@@ -351,13 +474,39 @@ func (l *simLog) Clear() {
 }
 
 func (l *simLog) refreshLines() {
-	start := logMaxLines - len(l.entries)
 	for i := range l.lines {
 		l.lines[i].Text = ""
 	}
-	for i, entry := range l.entries {
-		l.lines[start+i].Text = entry
+	if len(l.entries) == 0 {
+		return
 	}
+	first := len(l.entries) - logMaxLines
+	if first < 0 {
+		first = 0
+	}
+	lineStart := logMaxLines - (len(l.entries) - first)
+	for i, entry := range l.entries[first:] {
+		l.lines[lineStart+i].Text = trimLogLine(entry.String(), 50)
+	}
+}
+
+func (e simLogEntry) String() string {
+	line := e.stamp + "  " + e.msg
+	if e.repeat > 1 {
+		line += "  x" + strconv.Itoa(e.repeat)
+	}
+	return line
+}
+
+func trimLogLine(s string, limit int) string {
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	if limit <= 3 {
+		return string(r[:limit])
+	}
+	return string(r[:limit-3]) + "..."
 }
 
 func (l *simLog) Draw(dst draws.Image) {
@@ -371,7 +520,7 @@ func (l *simLog) Draw(dst draws.Image) {
 }
 
 func newSimulator() *simulator {
-	s := &simulator{isDark: true, aodEnabled: true} // theme.Dark() is active at startup
+	s := &simulator{isDark: true, aodEnabled: true, volume: 7} // theme.Dark() is active at startup
 	s.groups = groups()
 	s.activeDisplay = primaryIndex(s.groups[s.mode])
 
@@ -382,6 +531,8 @@ func newSimulator() *simulator {
 	t.Locate(simW/2, simH-8, draws.CenterBottom)
 	s.help = t
 	s.log = newSimLog()
+	s.shell = newSimShell()
+	s.powerMenu = newSimPowerMenu()
 	s.logf("simulator boot")
 
 	s.actions = s.buildActions()
@@ -412,7 +563,7 @@ func actionPanelBottom() float64 {
 		"Form":       2,
 		"Display":    1,
 		"Navigation": 2,
-		"System":     2,
+		"System":     3,
 		"Windowing":  2,
 		"Debug":      1,
 	}
@@ -435,19 +586,22 @@ func (s *simulator) buildActions() []simAction {
 		{Label: "Recents", Group: "Scenario", Handler: s.scenarioRecentsStack},
 		{Label: "Power", Group: "Device", Keys: []input.Key{input.KeyP}, Handler: s.togglePower},
 		{Label: "Lock", Group: "Device", Keys: []input.Key{input.KeyX}, Handler: s.toggleLock},
+		{Label: "Menu", Group: "Device", Keys: []input.Key{input.KeyF12}, Handler: s.togglePowerMenu},
 		{Label: "Shot", Group: "Device", Keys: []input.Key{input.KeyC, input.KeyPrintScreen}, Handler: s.requestScreenshot},
 		{Label: "Bar", Group: "Form", Keys: []input.Key{input.KeyDigit1}, Handler: func() { s.setMode(displayModeBar) }},
 		{Label: "Flip", Group: "Form", Keys: []input.Key{input.KeyDigit2}, Handler: func() { s.setMode(displayModeFlip) }},
 		{Label: "Fold", Group: "Form", Keys: []input.Key{input.KeyDigit3}, Handler: func() { s.setMode(displayModeFold) }},
 		{Label: "Screen", Group: "Display", Keys: []input.Key{input.KeyS}, Handler: s.cycleActiveDisplay},
 		{Label: "Rotate", Group: "Display", Keys: []input.Key{input.KeyO}, Handler: s.rotateScreen},
-		{Label: "Back", Group: "Navigation", Keys: []input.Key{input.KeyB, input.KeyEscape, input.KeyBackspace}, Handler: func() { s.ws.GoBack() }},
+		{Label: "Back", Group: "Navigation", Keys: []input.Key{input.KeyB, input.KeyEscape}, Handler: func() { s.ws.GoBack() }},
 		{Label: "Home", Group: "Navigation", Keys: []input.Key{input.KeyH}, Handler: func() { s.ws.GoHome() }},
 		{Label: "Recents", Group: "Navigation", Keys: []input.Key{input.KeyR}, Handler: func() { s.ws.GoRecents() }},
 		{Label: "Curtain", Group: "System", Keys: []input.Key{input.KeyN}, Handler: func() { s.ws.ToggleCurtain() }},
 		{Label: "Keys", Group: "System", Keys: []input.Key{input.KeyK}, Handler: func() { s.ws.ToggleKeyboard() }},
 		{Label: "Ring", Group: "System", Keys: []input.Key{input.KeyV}, Handler: func() { s.ws.ReceiveCall() }},
 		{Label: "Dark", Group: "System", Handler: func() { s.ws.SetDarkMode(!s.isDark) }},
+		{Label: "Vol-", Group: "System", Keys: []input.Key{input.KeyMinus}, Handler: func() { s.adjustVolume(-1) }},
+		{Label: "Vol+", Group: "System", Keys: []input.Key{input.KeyEqual}, Handler: func() { s.adjustVolume(1) }},
 		{Label: "Split", Group: "Windowing", Keys: []input.Key{input.KeyW}, Handler: func() { s.ws.EnterSplit() }},
 		{Label: "PiP", Group: "Windowing", Keys: []input.Key{input.KeyI}, Handler: func() { s.ws.EnterPip() }},
 		{Label: "Float", Group: "Windowing", Keys: []input.Key{input.KeyG}, Handler: func() { s.ws.EnterFreeform() }},
@@ -746,6 +900,187 @@ func (s *simulator) clearLog() {
 	s.log.Clear()
 }
 
+func (s *simulator) togglePowerMenu() {
+	s.powerMenu.visible = !s.powerMenu.visible
+	s.logf("power menu=%v", s.powerMenu.visible)
+}
+
+func (s *simulator) updatePowerMenu(frame mosapp.Frame) bool {
+	if !s.powerMenu.visible {
+		return false
+	}
+	for i := range s.powerMenu.buttons {
+		b := &s.powerMenu.buttons[i]
+		if !b.btn.Update(frame) {
+			continue
+		}
+		switch b.label {
+		case "Lock":
+			s.ws.Lock()
+		case "Sleep":
+			if s.display.Powered() {
+				s.togglePower()
+			}
+		case "Restart":
+			s.logf("restart")
+			s.applyMode()
+		case "Cancel":
+		}
+		s.powerMenu.visible = false
+		return true
+	}
+	for _, ev := range frame.Events {
+		if ev.Kind == input.EventDown {
+			return true
+		}
+	}
+	return true
+}
+
+func (s *simulator) adjustVolume(delta int) {
+	s.volume = max(0, min(10, s.volume+delta))
+	s.volumeShow = time.Now().Add(1400 * time.Millisecond)
+	s.logf("volume=%d", s.volume)
+}
+
+func (s *simulator) updateShell() bool {
+	if input.IsKeyJustPressed(input.KeyBackquote) {
+		s.shell.Toggle()
+		return true
+	}
+	if !s.shell.active {
+		return false
+	}
+	for _, r := range ebiten.AppendInputChars(nil) {
+		if r == '`' {
+			continue
+		}
+		s.shell.input += string(r)
+	}
+	if input.IsKeyJustPressed(input.KeyBackspace) {
+		runes := []rune(s.shell.input)
+		if len(runes) > 0 {
+			s.shell.input = string(runes[:len(runes)-1])
+		}
+	}
+	if input.IsKeyJustPressed(input.KeyEscape) {
+		s.shell.active = false
+		return true
+	}
+	if input.IsKeyJustPressed(input.KeyEnter) {
+		cmd := strings.TrimSpace(s.shell.input)
+		s.shell.input = ""
+		if cmd != "" {
+			s.runShellCommand(cmd)
+		}
+	}
+	return true
+}
+
+func (s *simulator) runShellCommand(cmd string) {
+	s.logf("$ %s", cmd)
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return
+	}
+	switch fields[0] {
+	case "help":
+		s.logf("shell: help launch <id> back home recents curtain lock unlock power menu|sleep|restart split pip float shot dump windows secure on|off crash volume <0..10> logs clear")
+	case "launch":
+		if len(fields) < 2 {
+			s.logf("shell: launch requires app id")
+			return
+		}
+		if !s.ws.CanLaunch(fields[1]) {
+			s.logf("shell: unknown app %s", fields[1])
+			return
+		}
+		s.ws.Launch(fields[1])
+	case "back":
+		s.ws.GoBack()
+	case "home":
+		s.ws.GoHome()
+	case "recents":
+		s.ws.GoRecents()
+	case "curtain":
+		s.ws.ToggleCurtain()
+	case "lock":
+		s.ws.Lock()
+	case "unlock":
+		s.ws.Unlock()
+	case "power":
+		if len(fields) < 2 || fields[1] == "menu" {
+			s.powerMenu.visible = true
+			return
+		}
+		switch fields[1] {
+		case "sleep", "off":
+			if s.display.Powered() {
+				s.togglePower()
+			}
+		case "wake", "on":
+			if !s.display.Powered() {
+				s.togglePower()
+			}
+		case "restart":
+			s.logf("restart")
+			s.applyMode()
+		default:
+			s.logf("shell: power menu|sleep|wake|restart")
+		}
+	case "split":
+		s.ws.EnterSplit()
+	case "pip":
+		s.ws.EnterPip()
+	case "float":
+		s.ws.EnterFreeform()
+	case "shot", "screenshot":
+		s.requestScreenshot()
+	case "dump":
+		if len(fields) > 1 && fields[1] == "windows" {
+			for _, line := range s.ws.DumpWindows() {
+				s.logLine(line)
+			}
+			return
+		}
+		s.logf("shell: try dump windows")
+	case "secure":
+		if len(fields) < 2 {
+			s.logf("shell: secure on|off")
+			return
+		}
+		enabled := fields[1] == "on" || fields[1] == "true" || fields[1] == "1"
+		if !s.ws.SetActiveSecureContent(enabled) {
+			s.logf("shell: no active window")
+		}
+	case "crash":
+		if !s.ws.CrashActiveApp("shell crash") {
+			s.logf("shell: no active window")
+		}
+	case "logs":
+		if len(fields) > 1 && fields[1] == "clear" {
+			s.clearLog()
+			return
+		}
+		s.logf("shell: try logs clear")
+	case "volume":
+		if len(fields) < 2 {
+			s.logf("volume=%d", s.volume)
+			return
+		}
+		n, err := strconv.Atoi(fields[1])
+		if err != nil {
+			s.logf("shell: volume 0..10")
+			return
+		}
+		s.volume = max(0, min(10, n))
+		s.volumeShow = time.Now().Add(1400 * time.Millisecond)
+		s.logf("volume=%d", s.volume)
+	default:
+		s.logf("shell: unknown command %s", fields[0])
+	}
+}
+
 // togglePower flips display power. A power-off→on transition auto-locks the
 // screen, mirroring real phone behaviour.
 func (s *simulator) togglePower() {
@@ -807,11 +1142,15 @@ func (s *simulator) Update() error {
 	rawX, rawY := ebiten.CursorPosition()
 	rawCursor := draws.XY{X: float64(rawX), Y: float64(rawY)}
 
-	for _, a := range s.actions {
-		for _, k := range a.Keys {
-			if input.IsKeyJustPressed(k) {
-				a.Handler()
-				break
+	shellHandled := s.updateShell()
+	ctrlDown := ebiten.IsKeyPressed(ebiten.KeyControlLeft) || ebiten.IsKeyPressed(ebiten.KeyControlRight)
+	if !shellHandled && !ctrlDown {
+		for _, a := range s.actions {
+			for _, k := range a.Keys {
+				if input.IsKeyJustPressed(k) {
+					a.Handler()
+					break
+				}
 			}
 		}
 	}
@@ -823,11 +1162,14 @@ func (s *simulator) Update() error {
 	// Sim action panel runs in raw viewport coords and dispatches regardless
 	// of display power, so a click on Power can wake the screen.
 	rawFrame := mosapp.Frame{Cursor: rawCursor, Events: s.rawInput.Poll()}
+	powerMenuHandled := s.updatePowerMenu(rawFrame)
 	for i := range s.actionGroups {
-		s.actionGroups[i].panel.Update(rawFrame)
+		if !powerMenuHandled {
+			s.actionGroups[i].panel.Update(rawFrame)
+		}
 	}
 
-	if s.display.Powered() {
+	if s.display.Powered() && !shellHandled && !powerMenuHandled {
 		group := s.effectiveGroup()
 		active := group[s.activeDisplay]
 
@@ -878,8 +1220,48 @@ func (s *simulator) Draw(screen *ebiten.Image) {
 	s.drawDisplayGroup(screen)
 
 	s.drawTriggers(draws.Image{Image: screen})
+	s.drawVolumePanel(draws.Image{Image: screen})
+	s.powerMenu.Draw(draws.Image{Image: screen})
 	s.log.Draw(draws.Image{Image: screen})
+	s.shell.Draw(draws.Image{Image: screen})
 	s.help.Draw(draws.Image{Image: screen})
+}
+
+func (s *simulator) drawVolumePanel(dst draws.Image) {
+	if time.Now().After(s.volumeShow) {
+		return
+	}
+	x := actionPanelLeft() - 72
+	y := actionPanelMargin
+	bg := draws.CreateImage(52, 190)
+	bg.Fill(color.RGBA{8, 10, 14, 220})
+	sp := draws.NewSprite(bg)
+	sp.Locate(x, y, draws.LeftTop)
+	sp.Draw(dst)
+
+	track := draws.CreateImage(8, 120)
+	track.Fill(color.RGBA{255, 255, 255, 42})
+	trackSp := draws.NewSprite(track)
+	trackSp.Locate(x+22, y+48, draws.LeftTop)
+	trackSp.Draw(dst)
+
+	fillH := float64(s.volume) / 10 * 120
+	fill := draws.CreateImage(8, fillH)
+	fill.Fill(color.RGBA{80, 170, 255, 230})
+	fillSp := draws.NewSprite(fill)
+	fillSp.Locate(x+22, y+48+120-fillH, draws.LeftTop)
+	fillSp.Draw(dst)
+
+	opts := draws.NewFaceOptions()
+	opts.Size = 11
+	label := draws.NewText("VOL")
+	label.SetFace(opts)
+	label.Locate(x+26, y+18, draws.CenterMiddle)
+	label.Draw(dst)
+	value := draws.NewText(strconv.Itoa(s.volume))
+	value.SetFace(opts)
+	value.Locate(x+26, y+176, draws.CenterMiddle)
+	value.Draw(dst)
 }
 
 func (s *simulator) drawDisplayGroup(screen *ebiten.Image) {

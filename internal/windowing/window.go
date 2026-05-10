@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hndada/mos/apps"
 	mosapp "github.com/hndada/mos/internal/app"
+	"github.com/hndada/mos/internal/apps"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/input"
 )
@@ -83,7 +83,10 @@ type Window struct {
 	mode        Mode
 	placement   Placement
 	captured    map[int]bool
+	secure      bool
 	canvasDirty bool // true = updateCanvas must run before next composite
+	appResumed  bool
+	crashLogged bool
 }
 
 // NewWindow creates a window and runs OnCreate before returning. The window
@@ -153,6 +156,7 @@ func NewRestoredWindow(state AppState, screenW, screenH float64, ws *Server) *Wi
 
 	proc.create(app.content, ctx)
 	proc.resume(app.content)
+	w.appResumed = true
 	proc.drain(ws, w)
 	return w
 }
@@ -171,29 +175,45 @@ func (w *Window) DismissTo(targetCenter, targetSize draws.XY) {
 	}
 	w.lifecycle = LifecycleHiding
 	w.anim.CloseTo(targetCenter, targetSize, DurationClosing)
-	w.proc.pause(w.app.content)
-	w.proc.drain(w.ctx.ws, w)
+	w.pauseApp()
 }
 
 // Destroy fires OnDestroy and marks the window as destroyed. cmdCh is left
 // open so late writes from app-owned goroutines are silently buffered or
 // dropped instead of panicking.
 func (w *Window) Destroy() {
+	w.pauseApp()
 	w.proc.destroy(w.app.content)
 	w.proc.drain(w.ctx.ws, w)
 	w.lifecycle = LifecycleDestroyed
+}
+
+func (w *Window) pauseApp() {
+	if !w.appResumed {
+		return
+	}
+	w.proc.pause(w.app.content)
+	w.proc.drain(w.ctx.ws, w)
+	w.appResumed = false
 }
 
 // Update advances animation state and, when an open animation completes,
 // fires OnResume on the app. The actual app Update is driven by the
 // windowing server via UpdateApp — not here.
 func (w *Window) Update() {
+	w.reportCrash()
+	if w.proc.crashed {
+		return
+	}
 	switch w.lifecycle {
 	case LifecycleShowing:
 		if w.anim.Done() {
 			w.lifecycle = LifecycleShown
-			w.proc.resume(w.app.content)
-			w.proc.drain(w.ctx.ws, w)
+			if !w.appResumed {
+				w.proc.resume(w.app.content)
+				w.proc.drain(w.ctx.ws, w)
+				w.appResumed = true
+			}
 			// OnResume may change visual state; mark canvas dirty so the
 			// first fully-open frame reflects it.
 			w.canvasDirty = true
@@ -212,11 +232,82 @@ func (w *Window) Update() {
 func (w *Window) UpdateApp(frame mosapp.Frame) {
 	w.proc.update(w.app.content, frame)
 	w.proc.drain(w.ctx.ws, w)
+	w.reportCrash()
 	w.canvasDirty = true
 }
 
 func (w *Window) updateCanvas() {
+	if w.proc.crashed {
+		w.drawCrashCanvas()
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			w.proc.crashed = true
+			w.proc.crashMessage = "Draw: " + sprintAny(r)
+			w.drawCrashCanvas()
+		}
+	}()
 	w.app.Draw(w.canvas)
+}
+
+func (w *Window) reportCrash() {
+	if !w.proc.crashed || w.crashLogged {
+		return
+	}
+	w.crashLogged = true
+	w.ctx.ws.log("app crash " + w.AppID() + ": " + w.proc.crashMessage)
+	w.ctx.ws.PostNotice(mosapp.Notice{
+		Title: "App stopped",
+		Body:  w.AppID() + " crashed",
+	})
+}
+
+func (w *Window) drawCrashCanvas() {
+	w.canvas.Fill(color.RGBA{28, 18, 22, 255})
+	titleOpts := draws.NewFaceOptions()
+	titleOpts.Size = 22
+	title := draws.NewText("App stopped")
+	title.SetFace(titleOpts)
+	title.Locate(w.screenW/2, w.screenH*0.42, draws.CenterMiddle)
+	title.Draw(w.canvas)
+
+	bodyOpts := draws.NewFaceOptions()
+	bodyOpts.Size = 13
+	body := draws.NewText(w.AppID() + " crashed")
+	body.SetFace(bodyOpts)
+	body.ColorScale.Scale(1, 1, 1, 0.68)
+	body.Locate(w.screenW/2, w.screenH*0.49, draws.CenterMiddle)
+	body.Draw(w.canvas)
+
+	hint := draws.NewText("Press Back or Home")
+	hint.SetFace(bodyOpts)
+	hint.ColorScale.Scale(1, 1, 1, 0.54)
+	hint.Locate(w.screenW/2, w.screenH*0.55, draws.CenterMiddle)
+	hint.Draw(w.canvas)
+}
+
+func drawRedacted(dst draws.Image, label string) {
+	dst.Fill(color.RGBA{8, 8, 10, 255})
+	opts := draws.NewFaceOptions()
+	opts.Size = 16
+	txt := draws.NewText(label)
+	txt.SetFace(opts)
+	txt.ColorScale.Scale(1, 1, 1, 0.62)
+	size := dst.Size()
+	txt.Locate(size.X/2, size.Y/2, draws.CenterMiddle)
+	txt.Draw(dst)
+}
+
+func sprintAny(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case error:
+		return x.Error()
+	default:
+		return "panic"
+	}
 }
 
 // HistoryEntry renders the current app frame into a snapshot for the recents carousel.
@@ -224,7 +315,11 @@ func (w *Window) HistoryEntry() apps.HistoryEntry {
 	w.updateCanvas()
 	size := w.canvas.Size()
 	snapshot := draws.CreateImage(size.X, size.Y)
-	snapshot.DrawImage(w.canvas.Image, &ebiten.DrawImageOptions{})
+	if w.secure {
+		drawRedacted(snapshot, "Secure content")
+	} else {
+		snapshot.DrawImage(w.canvas.Image, &ebiten.DrawImageOptions{})
+	}
 	return apps.HistoryEntry{
 		AppID:    w.app.ID,
 		Color:    w.clr,
@@ -264,6 +359,7 @@ func (w *Window) ToCanvasFrame(frame mosapp.Frame, screenW, screenH float64) mos
 			X: (frame.Cursor.X - minX) * sx,
 			Y: (frame.Cursor.Y - minY) * sy,
 		},
+		KeyEvents: frame.KeyEvents,
 	}
 	if len(frame.Events) > 0 {
 		out.Events = make([]input.Event, len(frame.Events))
@@ -292,6 +388,7 @@ func (w *Window) ToSplitCanvasFrame(frame mosapp.Frame) mosapp.Frame {
 			X: frame.Cursor.X - minX,
 			Y: frame.Cursor.Y - minY,
 		},
+		KeyEvents: frame.KeyEvents,
 	}
 	if len(frame.Events) > 0 {
 		out.Events = make([]input.Event, len(frame.Events))

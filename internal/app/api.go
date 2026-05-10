@@ -17,10 +17,13 @@ import (
 // list of input events that occurred since the last tick.
 //
 // Apps that only need a cursor position can read frame.Cursor and ignore
-// Events; widgets in the ui package consume the full Frame.
+// Events; widgets in the ui package consume the full Frame. KeyEvents is fed
+// by the optional async physical keyboard poller, so it can contain multiple
+// high-rate transitions between two draw/update ticks.
 type Frame struct {
-	Cursor draws.XY
-	Events []input.Event
+	Cursor    draws.XY
+	Events    []input.Event
+	KeyEvents []input.KeyEvent
 }
 
 // Content is the interface every MOS app must implement.
@@ -31,19 +34,47 @@ type Content interface {
 	Draw(dst draws.Image)
 }
 
-// Lifecycle is an optional extension of Content.
-// The windowing server calls each method at the appropriate phase.
-// Apps that hold subscriptions or timers should use OnCreate / OnDestroy.
-type Lifecycle interface {
+// Creator is an optional extension of Content.
+// The windowing server calls OnCreate once, immediately after the app is
+// instantiated. ctx is the same Context the factory received; store it for
+// later use.
+type Creator interface {
 	// OnCreate is called once, immediately after the app is instantiated.
 	// ctx is the same Context the factory received; store it for later use.
 	OnCreate(ctx Context)
+}
+
+// Resumer is an optional extension of Content.
+// OnResume is called only after the window is fully visible. MOS guarantees
+// every OnResume is followed by OnPause before OnDestroy.
+type Resumer interface {
 	// OnResume is called when the opening animation finishes (window is fully visible).
 	OnResume()
+}
+
+// Pauser is an optional extension of Content.
+// OnPause is called when a previously resumed window starts leaving the
+// foreground or is about to be destroyed.
+type Pauser interface {
 	// OnPause is called when the closing animation begins.
 	OnPause()
+}
+
+// Destroyer is an optional extension of Content.
+// Apps that hold subscriptions or timers should use OnCreate / OnDestroy.
+type Destroyer interface {
 	// OnDestroy is called just before the window is purged from memory.
 	OnDestroy()
+}
+
+// Lifecycle is the full optional app lifecycle. The windowing server checks
+// each phase interface independently, so apps may implement only the callbacks
+// they need while still preserving the real phase order.
+type Lifecycle interface {
+	Creator
+	Resumer
+	Pauser
+	Destroyer
 }
 
 // Notice is a message posted to the OS notification center (curtain panel).
@@ -114,6 +145,19 @@ const (
 	PermissionDenied
 )
 
+// Sound names short system feedback cues. They are intentionally tiny,
+// fire-and-forget sounds rather than long media playback.
+type Sound string
+
+const (
+	SoundTap          Sound = "tap"
+	SoundToggleOn     Sound = "toggle-on"
+	SoundToggleOff    Sound = "toggle-off"
+	SoundNotification Sound = "notification"
+	SoundSuccess      Sound = "success"
+	SoundError        Sound = "error"
+)
+
 // Context is the OS handle every app receives at creation.
 // It provides access to system services and lets the app drive OS actions.
 //
@@ -162,6 +206,7 @@ type Context interface {
 	SetAccentColor(c color.RGBA)
 	SetKeepScreenOn(enabled bool)
 	SetPreferredOrientation(o Orientation)
+	SetSecureContent(enabled bool)
 
 	// Launch opens another app by ID. The new window animates in from screen centre.
 	Launch(appID string)
@@ -273,6 +318,7 @@ type Context interface {
 
 	// Vibrate triggers simulated haptic feedback. The desktop simulator logs it.
 	Vibrate(duration time.Duration)
+	PlaySound(sound Sound)
 
 	// Audio focus mirrors Android/iOS audio-session ownership at a coarse level.
 	RequestAudioFocus() bool

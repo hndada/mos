@@ -47,6 +47,15 @@ func (b *Box) Locate(x, y float64, aligns Aligns) {
 	b.Position = XY{x, y}
 	b.Aligns = aligns
 }
+
+func (b *Box) LocateRel(v Viewport, xFrac, yFrac float64, aligns Aligns) {
+	b.Locate(v.X(xFrac), v.Y(yFrac), aligns)
+}
+
+func (b *Box) SetSizeRel(v Viewport, wFrac, hFrac float64) {
+	b.Size = v.Sz(wFrac, hFrac)
+}
+
 func (b *Box) Move(x, y float64) { b.Position = b.Position.Add(XY{x, y}) }
 
 // Min is the left-top position of the box.

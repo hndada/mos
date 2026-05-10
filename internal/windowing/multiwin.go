@@ -11,7 +11,7 @@ package windowing
 //	Freeform    ↔  Android freeform window mode (developer option) /
 //	               macOS NSWindow free positioning
 //
-// All layout state lives in multiWindowManager, which is owned by the
+// All layout state lives in multiWindowState, which is owned by the
 // Server. It is updated once per frame (Update*) and drawn once
 // per frame (Draw*) on the main goroutine.
 
@@ -78,11 +78,11 @@ const (
 	pipCornerTopLeft
 )
 
-// ── multiWindowManager ───────────────────────────────────────────────────────
+// ── multiWindowState ───────────────────────────────────────────────────────
 
-// multiWindowManager handles all multi-window state for one Server.
+// multiWindowState handles all multi-window state for one Server.
 // It is nil when all windows are fullscreen.
-type multiWindowManager struct {
+type multiWindowState struct {
 	mode    multiMode
 	screenW float64
 	screenH float64
@@ -122,8 +122,8 @@ type multiWindowManager struct {
 	freeformFocusRingImg    draws.Image // 1-px accent for the focused border
 }
 
-func newMultiWindowManager(screenW, screenH float64) *multiWindowManager {
-	m := &multiWindowManager{
+func newMultiWindowState(screenW, screenH float64) *multiWindowState {
+	m := &multiWindowState{
 		screenW:   screenW,
 		screenH:   screenH,
 		splitFrac: 0.5,
@@ -150,7 +150,7 @@ func newMultiWindowManager(screenW, screenH float64) *multiWindowManager {
 
 // ── Split ─────────────────────────────────────────────────────────────────────
 
-func (m *multiWindowManager) enterSplit(primary, secondary *Window) {
+func (m *multiWindowState) enterSplit(primary, secondary *Window) {
 	m.mode = multiModeSplit
 	m.splitPrimary = primary
 	m.splitSecondary = secondary
@@ -163,7 +163,7 @@ func (m *multiWindowManager) enterSplit(primary, secondary *Window) {
 	m.applySplitPlacements(DurationMultiWin)
 }
 
-func (m *multiWindowManager) splitPlacements() (primary, secondary Placement) {
+func (m *multiWindowState) splitPlacements() (primary, secondary Placement) {
 	if m.splitAxis == SplitAxisVertical {
 		pW := m.screenW*m.splitFrac - splitGap/2
 		sW := m.screenW*(1-m.splitFrac) - splitGap/2
@@ -190,7 +190,7 @@ func (m *multiWindowManager) splitPlacements() (primary, secondary Placement) {
 	return
 }
 
-func (m *multiWindowManager) applySplitPlacements(dur time.Duration) {
+func (m *multiWindowState) applySplitPlacements(dur time.Duration) {
 	p, s := m.splitPlacements()
 	m.splitPrimary.mode = ModeSplit
 	m.splitPrimary.placement = p
@@ -205,14 +205,14 @@ func (m *multiWindowManager) applySplitPlacements(dur time.Duration) {
 	}
 }
 
-func (m *multiWindowManager) splitDividerPos() float64 {
+func (m *multiWindowState) splitDividerPos() float64 {
 	if m.splitAxis == SplitAxisVertical {
 		return m.screenW * m.splitFrac
 	}
 	return m.screenH * m.splitFrac
 }
 
-func (m *multiWindowManager) inSplitDivider(pos draws.XY) bool {
+func (m *multiWindowState) inSplitDivider(pos draws.XY) bool {
 	dp := m.splitDividerPos()
 	ht := splitDragHitThickness
 	if m.splitAxis == SplitAxisVertical {
@@ -223,7 +223,7 @@ func (m *multiWindowManager) inSplitDivider(pos draws.XY) bool {
 
 // updateSplit consumes divider-drag events and returns the remainder for
 // normal window routing.
-func (m *multiWindowManager) updateSplit(events []input.Event) []input.Event {
+func (m *multiWindowState) updateSplit(events []input.Event) []input.Event {
 	remaining := events[:0]
 	for _, ev := range events {
 		switch ev.Kind {
@@ -268,7 +268,7 @@ func (m *multiWindowManager) updateSplit(events []input.Event) []input.Event {
 	return remaining
 }
 
-func (m *multiWindowManager) drawSplit(dst draws.Image) {
+func (m *multiWindowState) drawSplit(dst draws.Image) {
 	dp := m.splitDividerPos()
 	s := draws.NewSprite(m.splitDivImg)
 	if m.splitAxis == SplitAxisVertical {
@@ -281,7 +281,7 @@ func (m *multiWindowManager) drawSplit(dst draws.Image) {
 	s.Draw(dst)
 }
 
-func (m *multiWindowManager) exitSplit() {
+func (m *multiWindowState) exitSplit() {
 	fp := fullscreenPlacement(m.screenW, m.screenH)
 	for _, w := range []*Window{m.splitPrimary, m.splitSecondary} {
 		if w == nil {
@@ -317,7 +317,7 @@ func pipPlacement(corner pipCorner, screenW, screenH float64) Placement {
 	}
 }
 
-func (m *multiWindowManager) enterPip(pip *Window, corner pipCorner) {
+func (m *multiWindowState) enterPip(pip *Window, corner pipCorner) {
 	m.mode = multiModePip
 	m.pipWindow = pip
 	m.pipCorner = corner
@@ -330,7 +330,7 @@ func (m *multiWindowManager) enterPip(pip *Window, corner pipCorner) {
 // updatePip separates events into pip-destined and main-destined, and
 // handles corner-to-corner drag. Populated into m.pipFrameEvents /
 // m.mainFrameEvents for retrieval in frameForWindow.
-func (m *multiWindowManager) updatePip(events []input.Event) {
+func (m *multiWindowState) updatePip(events []input.Event) {
 	m.pipFrameEvents = m.pipFrameEvents[:0]
 	m.mainFrameEvents = m.mainFrameEvents[:0]
 	pip := m.pipWindow
@@ -389,7 +389,7 @@ func (m *multiWindowManager) updatePip(events []input.Event) {
 	}
 }
 
-func (m *multiWindowManager) nearestPipCorner(center draws.XY) pipCorner {
+func (m *multiWindowState) nearestPipCorner(center draws.XY) pipCorner {
 	mx, my := m.screenW/2, m.screenH/2
 	if center.X < mx {
 		if center.Y < my {
@@ -404,7 +404,7 @@ func (m *multiWindowManager) nearestPipCorner(center draws.XY) pipCorner {
 }
 
 // drawPip renders a 2-pixel accent border around the PiP window.
-func (m *multiWindowManager) drawPip(dst draws.Image) {
+func (m *multiWindowState) drawPip(dst draws.Image) {
 	pip := m.pipWindow
 	if pip == nil {
 		return
@@ -419,7 +419,7 @@ func (m *multiWindowManager) drawPip(dst draws.Image) {
 	bs.Draw(dst)
 }
 
-func (m *multiWindowManager) exitPip() {
+func (m *multiWindowState) exitPip() {
 	if m.pipWindow != nil {
 		fp := fullscreenPlacement(m.screenW, m.screenH)
 		m.pipWindow.mode = ModeFullscreen
@@ -432,7 +432,7 @@ func (m *multiWindowManager) exitPip() {
 
 // ── Freeform ──────────────────────────────────────────────────────────────────
 
-func (m *multiWindowManager) enterFreeform(windows []*Window) {
+func (m *multiWindowState) enterFreeform(windows []*Window) {
 	m.mode = multiModeFreeform
 	baseW := m.screenW * freeformDefaultFracW
 	baseH := m.screenH * freeformDefaultFracH
@@ -458,7 +458,7 @@ func (m *multiWindowManager) enterFreeform(windows []*Window) {
 }
 
 // inTitleBar reports whether pos is inside the title bar of window w.
-func (m *multiWindowManager) inTitleBar(w *Window, pos draws.XY) bool {
+func (m *multiWindowState) inTitleBar(w *Window, pos draws.XY) bool {
 	c := w.anim.Pos()
 	sz := w.anim.Size()
 	minX := c.X - sz.X/2
@@ -470,7 +470,7 @@ func (m *multiWindowManager) inTitleBar(w *Window, pos draws.XY) bool {
 // updateFreeform handles title-bar drag events. Returns remaining events
 // (those not consumed as drags) and the newly focused window (may be nil if
 // no focus change occurred).
-func (m *multiWindowManager) updateFreeform(events []input.Event, windows []*Window, currentFocus *Window) (remaining []input.Event, newFocus *Window) {
+func (m *multiWindowState) updateFreeform(events []input.Event, windows []*Window, currentFocus *Window) (remaining []input.Event, newFocus *Window) {
 	remaining = events[:0]
 	for _, ev := range events {
 		switch ev.Kind {
@@ -524,7 +524,7 @@ func (m *multiWindowManager) updateFreeform(events []input.Event, windows []*Win
 
 // drawFreeform renders a title bar and optional focus ring for each shown
 // freeform window. Must be called after the window sprites are drawn.
-func (m *multiWindowManager) drawFreeform(dst draws.Image, windows []*Window, focused *Window) {
+func (m *multiWindowState) drawFreeform(dst draws.Image, windows []*Window, focused *Window) {
 	titleOpts := draws.NewFaceOptions()
 	titleOpts.Size = 11
 
@@ -566,7 +566,7 @@ func (m *multiWindowManager) drawFreeform(dst draws.Image, windows []*Window, fo
 	}
 }
 
-func (m *multiWindowManager) exitFreeform(windows []*Window) {
+func (m *multiWindowState) exitFreeform(windows []*Window) {
 	fp := fullscreenPlacement(m.screenW, m.screenH)
 	for _, w := range windows {
 		if w.mode != ModeFloat {
@@ -585,7 +585,7 @@ func (m *multiWindowManager) exitFreeform(windows []*Window) {
 // are still alive. If a key window has been destroyed, the mode is cleared and
 // surviving windows are returned to fullscreen. Call after the purge step each
 // frame.
-func (m *multiWindowManager) cleanup(windows []*Window) {
+func (m *multiWindowState) cleanup(windows []*Window) {
 	switch m.mode {
 	case multiModeSplit:
 		pAlive := isWindowInList(m.splitPrimary, windows)

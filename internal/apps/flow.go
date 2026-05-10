@@ -13,13 +13,6 @@ import (
 	"github.com/hndada/mos/ui"
 )
 
-const (
-	flowTopH    = 56.0
-	flowTabH    = 58.0
-	flowPad     = 14.0
-	flowCardGap = 12.0
-)
-
 var (
 	flowBg       = color.RGBA{12, 14, 18, 255}
 	flowPanel    = color.RGBA{22, 25, 31, 255}
@@ -77,6 +70,12 @@ type FlowApp struct {
 	createdAt      time.Time
 	layoutStamp    string
 }
+
+func (a *FlowApp) vp() draws.Viewport { return draws.NewViewport(a.screenW, a.screenH) }
+func (a *FlowApp) topH() float64      { return a.vp().Y(0.067) }
+func (a *FlowApp) tabH() float64      { return a.vp().Y(0.070) }
+func (a *FlowApp) pad() float64       { return a.vp().X(0.038) }
+func (a *FlowApp) gap() float64       { return a.vp().Y(0.014) }
 
 func NewFlowApp(ctx mosapp.Context) mosapp.Content {
 	sz := ctx.ScreenSize()
@@ -148,6 +147,7 @@ func (a *FlowApp) OnDestroy() {
 }
 
 func (a *FlowApp) layout() {
+	vp := a.vp()
 	sa := a.ctx.SafeArea()
 	stamp := strings.Join([]string{ftoa(a.screenW), ftoa(a.screenH), ftoa(sa.Top), ftoa(sa.Bottom)}, ":")
 	if stamp == a.layoutStamp {
@@ -155,22 +155,24 @@ func (a *FlowApp) layout() {
 	}
 	a.layoutStamp = stamp
 
-	top := max(flowTopH, sa.Top+flowTopH)
-	bottom := max(flowTabH, sa.Bottom+flowTabH)
+	topH, tabH, pad := a.topH(), a.tabH(), a.pad()
+	top := max(topH, sa.Top+topH)
+	bottom := max(tabH, sa.Bottom+tabH)
 	a.scroll.Size = draws.XY{X: a.screenW, Y: max(0, a.screenH-top-bottom)}
 	a.scroll.Locate(0, top, draws.LeftTop)
 
 	a.tabButtons = make([]ui.TriggerButton, 4)
 	tabW := a.screenW / 4
 	for i := range a.tabButtons {
-		a.tabButtons[i] = ui.NewTriggerButton(float64(i)*tabW, a.screenH-bottom, tabW, flowTabH)
+		a.tabButtons[i] = ui.NewTriggerButton(float64(i)*tabW, a.screenH-bottom, tabW, tabH)
 	}
 
-	a.query = ui.NewTextField(flowPad, top+12, a.screenW-flowPad*2, "Search Flow")
-	a.composeBtn = ui.NewButton("Post", 14, a.screenW-flowPad-72, sa.Top+12, 72, 32, flowAccent)
-	a.cameraBtn = ui.NewButton("Camera", 13, flowPad, top+64, 86, 34, flowAccent)
-	a.photoBtn = ui.NewButton("Photo", 13, flowPad+98, top+64, 86, 34, flowBlue)
-	a.clearBtn = ui.NewButton("Clear", 13, a.screenW-flowPad-86, top+64, 86, 34, color.RGBA{66, 72, 84, 255})
+	actionW, actionH := vp.X(0.23), vp.Y(0.041)
+	a.query = ui.NewTextField(pad, top+vp.Y(0.014), a.screenW-pad*2, "Search Flow")
+	a.composeBtn = ui.NewButton("Post", 14, a.screenW-pad-vp.X(0.193), sa.Top+vp.Y(0.014), vp.X(0.193), vp.Y(0.038), flowAccent)
+	a.cameraBtn = ui.NewButton("Camera", 13, pad, top+vp.Y(0.077), actionW, actionH, flowAccent)
+	a.photoBtn = ui.NewButton("Photo", 13, pad+actionW+vp.X(0.032), top+vp.Y(0.077), actionW, actionH, flowBlue)
+	a.clearBtn = ui.NewButton("Clear", 13, a.screenW-pad-actionW, top+vp.Y(0.077), actionW, actionH, color.RGBA{66, 72, 84, 255})
 	a.layoutFeedButtons()
 }
 
@@ -180,22 +182,25 @@ func (a *FlowApp) layoutFeedButtons() {
 	a.shareButtons = a.shareButtons[:0]
 	a.commentButtons = a.commentButtons[:0]
 
-	y := flowPad
-	cardW := a.screenW - flowPad*2
+	vp := a.vp()
+	pad := a.pad()
+	y := pad
+	cardW := a.screenW - pad*2
 	for i := range a.posts {
 		h := a.postHeight(a.posts[i])
-		actionY := a.scroll.Position.Y + y + h - 48 - a.scroll.Offset().Y
-		a.likeButtons = append(a.likeButtons, ui.NewTriggerButton(flowPad+12, actionY, 70, 36))
-		a.commentButtons = append(a.commentButtons, ui.NewTriggerButton(flowPad+92, actionY, 80, 36))
-		a.shareButtons = append(a.shareButtons, ui.NewTriggerButton(flowPad+cardW-132, actionY, 58, 36))
-		a.saveButtons = append(a.saveButtons, ui.NewTriggerButton(flowPad+cardW-68, actionY, 56, 36))
-		y += h + flowCardGap
+		actionY := a.scroll.Position.Y + y + h - vp.Y(0.058) - a.scroll.Offset().Y
+		a.likeButtons = append(a.likeButtons, ui.NewTriggerButton(pad+vp.X(0.032), actionY, vp.X(0.19), vp.Y(0.043)))
+		a.commentButtons = append(a.commentButtons, ui.NewTriggerButton(pad+vp.X(0.247), actionY, vp.X(0.215), vp.Y(0.043)))
+		a.shareButtons = append(a.shareButtons, ui.NewTriggerButton(pad+cardW-vp.X(0.355), actionY, vp.X(0.156), vp.Y(0.043)))
+		a.saveButtons = append(a.saveButtons, ui.NewTriggerButton(pad+cardW-vp.X(0.183), actionY, vp.X(0.151), vp.Y(0.043)))
+		y += h + a.gap()
 	}
-	a.scroll.ContentSize = draws.XY{X: a.screenW, Y: y + flowPad}
+	a.scroll.ContentSize = draws.XY{X: a.screenW, Y: y + pad}
 }
 
 func (a *FlowApp) postHeight(p flowPost) float64 {
-	return 318 + float64(len(wrapText(p.Caption, 34)))*17
+	vp := a.vp()
+	return vp.Y(0.382) + float64(len(wrapText(p.Caption, 34)))*vp.Y(0.020)
 }
 
 func (a *FlowApp) Update(frame mosapp.Frame) {
@@ -205,6 +210,7 @@ func (a *FlowApp) Update(frame mosapp.Frame) {
 			a.tab = flowTab(i)
 			a.status = a.tabName(a.tab)
 			a.ctx.Vibrate(12 * time.Millisecond)
+			a.ctx.PlaySound(mosapp.SoundTap)
 			a.ctx.HideKeyboard()
 		}
 	}
@@ -305,6 +311,7 @@ func (a *FlowApp) toggleLike(i int) {
 	a.posts[i].Liked = true
 	a.posts[i].Likes++
 	a.ctx.Vibrate(18 * time.Millisecond)
+	a.ctx.PlaySound(mosapp.SoundSuccess)
 	a.ctx.PostNotice(mosapp.Notice{Title: "Flow", Body: "Liked " + a.posts[i].Author + "'s post"})
 	a.status = "Liked"
 }
@@ -405,19 +412,21 @@ func (a *FlowApp) Draw(dst draws.Image) {
 }
 
 func (a *FlowApp) drawTopBar(dst draws.Image) {
+	vp := a.vp()
 	sa := a.ctx.SafeArea()
-	bar := draws.CreateImage(a.screenW, max(flowTopH, sa.Top+flowTopH))
+	topH, pad := a.topH(), a.pad()
+	bar := draws.CreateImage(a.screenW, max(topH, sa.Top+topH))
 	bar.Fill(color.RGBA{13, 15, 20, 245})
 	sp := draws.NewSprite(bar)
 	sp.Locate(0, 0, draws.LeftTop)
 	sp.Draw(dst)
 
 	title := flowText("Flow", 24, color.RGBA{255, 255, 255, 255})
-	title.Locate(flowPad, sa.Top+28, draws.LeftMiddle)
+	title.Locate(pad, sa.Top+vp.Y(0.034), draws.LeftMiddle)
 	title.Draw(dst)
 
 	meta := flowText(a.status, 12, flowTextSoft)
-	meta.Locate(flowPad+64, sa.Top+29, draws.LeftMiddle)
+	meta.Locate(pad+vp.X(0.172), sa.Top+vp.Y(0.035), draws.LeftMiddle)
 	meta.Draw(dst)
 	if a.tab == flowFeed {
 		a.composeBtn.Draw(dst)
@@ -428,11 +437,12 @@ func (a *FlowApp) drawFeed(dst draws.Image) {
 	canvasH := max(a.scroll.H(), a.scroll.ContentSize.Y)
 	canvas := draws.CreateImage(a.screenW, canvasH)
 	canvas.Fill(flowBg)
-	y := flowPad - a.scroll.Offset().Y
+	pad := a.pad()
+	y := pad - a.scroll.Offset().Y
 	for _, post := range a.posts {
 		h := a.postHeight(post)
-		a.drawPost(canvas, post, flowPad, y, a.screenW-flowPad*2, h)
-		y += h + flowCardGap
+		a.drawPost(canvas, post, pad, y, a.screenW-pad*2, h)
+		y += h + a.gap()
 	}
 	a.drawScrollCanvas(dst, canvas)
 }
@@ -449,41 +459,46 @@ func (a *FlowApp) drawScrollCanvas(dst, canvas draws.Image) {
 }
 
 func (a *FlowApp) drawPost(dst draws.Image, p flowPost, x, y, w, h float64) {
-	card := roundedRectImage(w, h, 14, flowPanel)
+	vp := a.vp()
+	card := roundedRectImage(w, h, vp.U(0.036), flowPanel)
 	sp := draws.NewSprite(card)
 	sp.Locate(x, y, draws.LeftTop)
 	sp.Draw(dst)
 
-	a.drawAvatar(dst, x+26, y+28, p.Author)
+	a.drawAvatar(dst, x+vp.X(0.070), y+vp.Y(0.034), p.Author)
 	author := flowText(p.Author, 15, color.RGBA{255, 255, 255, 245})
-	author.Locate(x+54, y+19, draws.LeftTop)
+	author.Locate(x+vp.X(0.145), y+vp.Y(0.023), draws.LeftTop)
 	author.Draw(dst)
 	handle := flowText(p.Handle+"  "+p.Location, 12, flowTextSoft)
-	handle.Locate(x+54, y+40, draws.LeftTop)
+	handle.Locate(x+vp.X(0.145), y+vp.Y(0.048), draws.LeftTop)
 	handle.Draw(dst)
 
-	media := draws.CreateImage(w-24, 188)
+	mediaH := vp.Y(0.226)
+	mediaInset := vp.X(0.032)
+	media := draws.CreateImage(w-mediaInset*2, mediaH)
 	a.paintGradient(media, p.Palette)
 	msp := draws.NewSprite(media)
-	msp.Locate(x+12, y+66, draws.LeftTop)
+	msp.Locate(x+mediaInset, y+vp.Y(0.079), draws.LeftTop)
 	msp.Draw(dst)
 
-	captionY := y + 266
+	captionY := y + vp.Y(0.320)
 	for i, line := range wrapText(p.Caption, 34) {
 		t := flowText(line, 13, color.RGBA{255, 255, 255, 220})
-		t.Locate(x+14, captionY+float64(i)*17, draws.LeftTop)
+		t.Locate(x+vp.X(0.038), captionY+float64(i)*vp.Y(0.020), draws.LeftTop)
 		t.Draw(dst)
 	}
 
-	actionY := y + h - 38
-	a.drawAction(dst, x+14, actionY, heartLabel(p.Liked)+" "+itoa(p.Likes), p.Liked)
-	a.drawAction(dst, x+94, actionY, "C "+itoa(p.Comments), false)
-	a.drawAction(dst, x+w-128, actionY, "Share", false)
-	a.drawAction(dst, x+w-64, actionY, saveLabel(p.Saved), p.Saved)
+	actionY := y + h - vp.Y(0.046)
+	a.drawAction(dst, x+vp.X(0.038), actionY, heartLabel(p.Liked)+" "+itoa(p.Likes), p.Liked)
+	a.drawAction(dst, x+vp.X(0.252), actionY, "C "+itoa(p.Comments), false)
+	a.drawAction(dst, x+w-vp.X(0.344), actionY, "Share", false)
+	a.drawAction(dst, x+w-vp.X(0.172), actionY, saveLabel(p.Saved), p.Saved)
 }
 
 func (a *FlowApp) drawAvatar(dst draws.Image, cx, cy float64, name string) {
-	img := roundedRectImage(34, 34, 17, flowAccent)
+	vp := a.vp()
+	side := vp.U(0.091)
+	img := roundedRectImage(side, side, side/2, flowAccent)
 	sp := draws.NewSprite(img)
 	sp.Locate(cx, cy, draws.CenterMiddle)
 	sp.Draw(dst)
@@ -511,62 +526,69 @@ func (a *FlowApp) drawSearch(dst draws.Image) {
 	a.query.Draw(dst)
 	a.cameraBtn.Draw(dst)
 	a.photoBtn.Draw(dst)
-	top := a.scroll.Position.Y + 112
+	top := a.scroll.Position.Y + a.vp().Y(0.135)
 	a.drawPanelText(dst, "Discover", "Search posts, capture a simulated camera photo, or import the latest screenshot as a post.", top)
 }
 
 func (a *FlowApp) drawInbox(dst draws.Image) {
 	a.clearBtn.Draw(dst)
-	top := a.scroll.Position.Y + 28
+	vp := a.vp()
+	top := a.scroll.Position.Y + vp.Y(0.034)
 	a.drawInboxRow(dst, top, "Mira Studio", "Liked your MOS rewrite", "now")
-	a.drawInboxRow(dst, top+64, "Northline", "Started following you", "2m")
-	a.drawInboxRow(dst, top+128, "Ari", "Commented: this API is enough", "8m")
+	a.drawInboxRow(dst, top+vp.Y(0.077), "Northline", "Started following you", "2m")
+	a.drawInboxRow(dst, top+vp.Y(0.154), "Ari", "Commented: this API is enough", "8m")
 }
 
 func (a *FlowApp) drawProfile(dst draws.Image) {
 	a.clearBtn.Draw(dst)
-	top := a.scroll.Position.Y + 30
-	a.drawAvatar(dst, a.screenW/2, top+36, "You")
+	vp := a.vp()
+	top := a.scroll.Position.Y + vp.Y(0.036)
+	a.drawAvatar(dst, a.screenW/2, top+vp.Y(0.043), "You")
 	name := flowText("You", 22, color.RGBA{255, 255, 255, 255})
-	name.Locate(a.screenW/2, top+76, draws.CenterTop)
+	name.Locate(a.screenW/2, top+vp.Y(0.091), draws.CenterTop)
 	name.Draw(dst)
 	stats := flowText(itoa(len(a.posts))+" posts  "+itoa(a.savedCount())+" saved  online", 13, flowTextSoft)
-	stats.Locate(a.screenW/2, top+110, draws.CenterTop)
+	stats.Locate(a.screenW/2, top+vp.Y(0.132), draws.CenterTop)
 	stats.Draw(dst)
-	a.drawPanelText(dst, "Local account", "Profile state is stored through MOS preferences and system intents handle links.", top+160)
+	a.drawPanelText(dst, "Local account", "Profile state is stored through MOS preferences and system intents handle links.", top+vp.Y(0.192))
 }
 
 func (a *FlowApp) drawPanelText(dst draws.Image, title, body string, y float64) {
-	panel := roundedRectImage(a.screenW-flowPad*2, 112, 12, flowPanel)
+	vp := a.vp()
+	pad := a.pad()
+	panel := roundedRectImage(a.screenW-pad*2, vp.Y(0.135), vp.U(0.032), flowPanel)
 	sp := draws.NewSprite(panel)
-	sp.Locate(flowPad, y, draws.LeftTop)
+	sp.Locate(pad, y, draws.LeftTop)
 	sp.Draw(dst)
 	t := flowText(title, 17, color.RGBA{255, 255, 255, 245})
-	t.Locate(flowPad+16, y+18, draws.LeftTop)
+	t.Locate(pad+vp.X(0.043), y+vp.Y(0.022), draws.LeftTop)
 	t.Draw(dst)
 	for i, line := range wrapText(body, 38) {
 		txt := flowText(line, 13, flowTextSoft)
-		txt.Locate(flowPad+16, y+50+float64(i)*18, draws.LeftTop)
+		txt.Locate(pad+vp.X(0.043), y+vp.Y(0.060)+float64(i)*vp.Y(0.022), draws.LeftTop)
 		txt.Draw(dst)
 	}
 }
 
 func (a *FlowApp) drawInboxRow(dst draws.Image, y float64, title, body, when string) {
-	a.drawAvatar(dst, flowPad+20, y+28, title)
+	vp := a.vp()
+	pad := a.pad()
+	a.drawAvatar(dst, pad+vp.X(0.054), y+vp.Y(0.034), title)
 	t := flowText(title, 15, color.RGBA{255, 255, 255, 240})
-	t.Locate(flowPad+52, y+13, draws.LeftTop)
+	t.Locate(pad+vp.X(0.14), y+vp.Y(0.016), draws.LeftTop)
 	t.Draw(dst)
 	b := flowText(body, 12, flowTextSoft)
-	b.Locate(flowPad+52, y+36, draws.LeftTop)
+	b.Locate(pad+vp.X(0.14), y+vp.Y(0.043), draws.LeftTop)
 	b.Draw(dst)
 	w := flowText(when, 12, flowTextSoft)
-	w.Locate(a.screenW-flowPad, y+18, draws.RightTop)
+	w.Locate(a.screenW-pad, y+vp.Y(0.022), draws.RightTop)
 	w.Draw(dst)
 }
 
 func (a *FlowApp) drawTabs(dst draws.Image) {
+	vp := a.vp()
 	sa := a.ctx.SafeArea()
-	tabH := max(flowTabH, sa.Bottom+flowTabH)
+	tabH := max(a.tabH(), sa.Bottom+a.tabH())
 	bg := draws.CreateImage(a.screenW, tabH)
 	bg.Fill(color.RGBA{15, 17, 22, 248})
 	sp := draws.NewSprite(bg)
@@ -579,10 +601,10 @@ func (a *FlowApp) drawTabs(dst draws.Image) {
 		c := flowTextSoft
 		if flowTab(i) == a.tab {
 			c = color.RGBA{255, 255, 255, 255}
-			vector.DrawFilledRect(dst.Image, float32(i)*float32(tabW)+float32(tabW)*0.32, float32(a.screenH-tabH+6), float32(tabW)*0.36, 3, flowAccent, true)
+			vector.DrawFilledRect(dst.Image, float32(i)*float32(tabW)+float32(tabW)*0.32, float32(a.screenH-tabH+vp.Y(0.007)), float32(tabW)*0.36, float32(vp.U(0.008)), flowAccent, true)
 		}
 		t := flowText(label, 12, c)
-		t.Locate(float64(i)*tabW+tabW/2, a.screenH-tabH+29, draws.CenterMiddle)
+		t.Locate(float64(i)*tabW+tabW/2, a.screenH-tabH+vp.Y(0.035), draws.CenterMiddle)
 		t.Draw(dst)
 	}
 }

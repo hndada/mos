@@ -4,7 +4,7 @@ package input
 
 import "golang.org/x/sys/windows"
 
-const defaultPollingRate = 250.0 // Hz
+const defaultPollingRate = 1000.0 // Hz
 
 // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getkeystate
 // Get'Async'KeyState would make the exectuable false-positive.

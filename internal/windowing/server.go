@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hndada/mos/apps"
 	mosapp "github.com/hndada/mos/internal/app"
+	"github.com/hndada/mos/internal/apps"
 	"github.com/hndada/mos/internal/draws"
 	"github.com/hndada/mos/internal/event"
 	"github.com/hndada/mos/internal/input"
@@ -48,11 +48,15 @@ type Server struct {
 	// inputProducer turns Ebiten polling state into discrete events that are
 	// routed to the active window each frame.
 	inputProducer input.Producer
+	// physicalKeyboard is an optional high-rate poller for rhythm games and
+	// other keyboard-latency-sensitive apps. It runs independently from Draw /
+	// Update and is drained into Frame.KeyEvents on each server tick.
+	physicalKeyboard *input.Keyboard
 
-	// Multi-window state. mwm is nil when all windows are fullscreen.
+	// Multi-window state. multi is nil when all windows are fullscreen.
 	// focusedWindow is the window that receives pointer/touch input in split
 	// and freeform modes; in fullscreen mode activeWindow() is used.
-	mwm           *multiWindowManager
+	multi         *multiWindowState
 	focusedWindow *Window
 
 	// keyboardFocus is the window that holds keyboard and IME focus. It is
@@ -88,6 +92,7 @@ type Server struct {
 	audioFocus       string
 	bgSeq            int
 	bgTasks          map[string]string
+	feedbackUnsub    func()
 }
 
 type scheduledNotice struct {
@@ -120,8 +125,49 @@ func (ws *Server) SetWallpaper(w Wallpaper) { ws.wallpaper = w }
 func (ws *Server) SetHistory(h History)     { ws.hist = h }
 func (ws *Server) SetKeyboard(k Keyboard)   { ws.kb = k }
 func (ws *Server) SetStatusBar(s StatusBar) { ws.statusBar = s }
-func (ws *Server) SetCurtain(s Curtain)     { ws.curtain = s }
-func (ws *Server) SetLock(l Lock)           { ws.lock = l }
+func (ws *Server) SetCurtain(s Curtain) {
+	ws.curtain = s
+	ws.subscribeFeedback()
+}
+func (ws *Server) SetLock(l Lock) { ws.lock = l }
+
+func (ws *Server) SetPhysicalKeyboard(keys []input.Key, pollingRate float64) {
+	ws.StopPhysicalKeyboard()
+	kb := input.NewKeyboard(keys)
+	kb.SetPollingRate(pollingRate)
+	kb.Listen(time.Now())
+	ws.physicalKeyboard = kb
+}
+
+func (ws *Server) StopPhysicalKeyboard() {
+	if ws.physicalKeyboard == nil {
+		return
+	}
+	ws.physicalKeyboard.Stop()
+	ws.physicalKeyboard = nil
+}
+
+func (ws *Server) subscribeFeedback() {
+	if ws.Bus == nil || ws.feedbackUnsub != nil {
+		return
+	}
+	ws.feedbackUnsub = ws.Bus.Subscribe(event.KindCustom, func(e event.Event) {
+		ce, ok := e.(event.Custom)
+		if !ok || ce.Topic != "mos/system/feedback" {
+			return
+		}
+		data, ok := ce.Data.(map[string]any)
+		if !ok {
+			return
+		}
+		if rawSound, ok := data["sound"].(string); ok {
+			ws.PlaySound(mosapp.Sound(rawSound))
+		}
+		if duration, ok := data["vibration"].(time.Duration); ok {
+			ws.Vibrate(duration)
+		}
+	})
+}
 
 func (ws *Server) ShowKeyboard() {
 	if ws.kb != nil && !ws.kb.IsVisible() {
@@ -480,6 +526,13 @@ func (ws *Server) Vibrate(duration time.Duration) {
 	ws.log("vibrate " + duration.String())
 }
 
+func (ws *Server) PlaySound(sound mosapp.Sound) {
+	if sound == "" {
+		return
+	}
+	ws.log("sound " + string(sound))
+}
+
 func (ws *Server) RequestAudioFocus(appID string) bool {
 	ws.serviceMu.Lock()
 	defer ws.serviceMu.Unlock()
@@ -623,7 +676,7 @@ func (ws *Server) ToggleCurtain() {
 // window exists a colour-placeholder is launched as the secondary. Calling
 // EnterSplit while already in split mode exits split instead (toggle).
 func (ws *Server) EnterSplit() {
-	if ws.mwm != nil && ws.mwm.mode == multiModeSplit {
+	if ws.multi != nil && ws.multi.mode == multiModeSplit {
 		ws.ExitMultiWindow()
 		return
 	}
@@ -648,14 +701,14 @@ func (ws *Server) EnterSplit() {
 		ws.launchApp(center, size, color.RGBA{50, 70, 110, 255}, "")
 		shown = append(shown, ws.windows[len(ws.windows)-1])
 	}
-	if ws.mwm == nil {
-		ws.mwm = newMultiWindowManager(ws.ScreenW, ws.ScreenH)
+	if ws.multi == nil {
+		ws.multi = newMultiWindowState(ws.ScreenW, ws.ScreenH)
 	}
 	// shown[0] = topmost (right/bottom), shown[1] = older (left/top).
 	// Place the older window as primary and the frontmost as secondary so
 	// the app the user was looking at ends up on the right.
 	primary, secondary := shown[len(shown)-1], shown[0]
-	ws.mwm.enterSplit(primary, secondary)
+	ws.multi.enterSplit(primary, secondary)
 	ws.focusedWindow = primary
 	ws.log("split enter")
 }
@@ -664,7 +717,7 @@ func (ws *Server) EnterSplit() {
 // it (if any) continues as fullscreen background. Calling EnterPip while
 // already in pip mode exits pip instead (toggle).
 func (ws *Server) EnterPip() {
-	if ws.mwm != nil && ws.mwm.mode == multiModePip {
+	if ws.multi != nil && ws.multi.mode == multiModePip {
 		ws.ExitMultiWindow()
 		return
 	}
@@ -680,10 +733,10 @@ func (ws *Server) EnterPip() {
 		ws.log("pip: no window")
 		return
 	}
-	if ws.mwm == nil {
-		ws.mwm = newMultiWindowManager(ws.ScreenW, ws.ScreenH)
+	if ws.multi == nil {
+		ws.multi = newMultiWindowState(ws.ScreenW, ws.ScreenH)
 	}
-	ws.mwm.enterPip(pip, pipCornerBottomRight)
+	ws.multi.enterPip(pip, pipCornerBottomRight)
 	ws.focusedWindow = pip
 	ws.log("pip enter")
 }
@@ -691,7 +744,7 @@ func (ws *Server) EnterPip() {
 // EnterFreeform makes all shown windows draggable floating rectangles.
 // Calling EnterFreeform while already in freeform mode exits it instead.
 func (ws *Server) EnterFreeform() {
-	if ws.mwm != nil && ws.mwm.mode == multiModeFreeform {
+	if ws.multi != nil && ws.multi.mode == multiModeFreeform {
 		ws.ExitMultiWindow()
 		return
 	}
@@ -705,28 +758,28 @@ func (ws *Server) EnterFreeform() {
 		ws.log("freeform: no windows")
 		return
 	}
-	if ws.mwm == nil {
-		ws.mwm = newMultiWindowManager(ws.ScreenW, ws.ScreenH)
+	if ws.multi == nil {
+		ws.multi = newMultiWindowState(ws.ScreenW, ws.ScreenH)
 	}
-	ws.mwm.enterFreeform(shown)
+	ws.multi.enterFreeform(shown)
 	ws.focusedWindow = shown[len(shown)-1] // topmost
 	ws.log("freeform enter")
 }
 
 // ExitMultiWindow returns all windows to fullscreen and clears multi-window state.
 func (ws *Server) ExitMultiWindow() {
-	if ws.mwm == nil {
+	if ws.multi == nil {
 		return
 	}
-	switch ws.mwm.mode {
+	switch ws.multi.mode {
 	case multiModeSplit:
-		ws.mwm.exitSplit()
+		ws.multi.exitSplit()
 	case multiModePip:
-		ws.mwm.exitPip()
+		ws.multi.exitPip()
 	case multiModeFreeform:
-		ws.mwm.exitFreeform(ws.windows)
+		ws.multi.exitFreeform(ws.windows)
 	}
-	ws.mwm.mode = multiModeNone
+	ws.multi.mode = multiModeNone
 	ws.focusedWindow = nil
 	ws.log("multi-window exit")
 }
@@ -734,7 +787,7 @@ func (ws *Server) ExitMultiWindow() {
 // CycleFocus moves keyboard focus to the next visible window in split or
 // freeform mode.
 func (ws *Server) CycleFocus() {
-	if ws.mwm == nil || ws.mwm.mode == multiModeNone {
+	if ws.multi == nil || ws.multi.mode == multiModeNone {
 		return
 	}
 	var visible []*Window
@@ -766,9 +819,75 @@ func (ws *Server) AddScreenshot(src draws.Image) {
 	}
 	size := src.Size()
 	shot := draws.CreateImage(size.X, size.Y)
-	shot.DrawImage(src.Image, &ebiten.DrawImageOptions{})
+	if ws.hasSecureVisibleWindow() || ws.IsLocked() {
+		drawRedacted(shot, "Screenshot blocked")
+		ws.log("screenshot blocked")
+	} else {
+		shot.DrawImage(src.Image, &ebiten.DrawImageOptions{})
+		ws.log("screenshot captured")
+	}
 	ws.screenshots = append(ws.screenshots, shot)
-	ws.log("screenshot captured")
+}
+
+func (ws *Server) hasSecureVisibleWindow() bool {
+	for _, w := range ws.windows {
+		if w.secure && w.lifecycle.Visible() {
+			return true
+		}
+	}
+	return false
+}
+
+func (ws *Server) SetActiveSecureContent(enabled bool) bool {
+	w, ok := ws.activeWindow()
+	if !ok {
+		return false
+	}
+	w.secure = enabled
+	ws.log("secure content " + w.AppID() + "=" + strconv.FormatBool(enabled))
+	return true
+}
+
+func (ws *Server) CrashActiveApp(reason string) bool {
+	w, ok := ws.activeWindow()
+	if !ok {
+		return false
+	}
+	if reason == "" {
+		reason = "shell crash"
+	}
+	w.proc.crashed = true
+	w.proc.crashMessage = reason
+	w.canvasDirty = true
+	w.reportCrash()
+	return true
+}
+
+func (ws *Server) DumpWindows() []string {
+	lines := []string{"WINDOWS"}
+	for i := len(ws.windows) - 1; i >= 0; i-- {
+		w := ws.windows[i]
+		line := strconv.Itoa(i) + " " + w.AppID() +
+			" lifecycle=" + w.lifecycle.String() +
+			" mode=" + w.mode.String()
+		if w == ws.focusedWindow {
+			line += " pointer-focus"
+		}
+		if w == ws.keyboardFocus {
+			line += " key-focus"
+		}
+		if w.secure {
+			line += " secure"
+		}
+		if w.proc.crashed {
+			line += " crashed"
+		}
+		lines = append(lines, line)
+	}
+	if len(ws.windows) == 0 {
+		lines = append(lines, "(none)")
+	}
+	return lines
 }
 
 // SafeArea computes the per-edge offsets reserved by system UI for the
@@ -932,7 +1051,7 @@ func (ws *Server) logLifecycleChange(w *Window, before Lifecycle) {
 		// auto-grant keyboard focus so apps can receive IME input without an
 		// explicit RequestFocus call. In multi-window modes focus is managed
 		// explicitly by the user or by apps calling RequestFocus().
-		if ws.mwm == nil || ws.mwm.mode == multiModeNone {
+		if ws.multi == nil || ws.multi.mode == multiModeNone {
 			ws.grantFocus(w)
 		}
 	case LifecycleHiding:
@@ -1030,13 +1149,18 @@ func (ws *Server) HistoryEntries() []apps.HistoryEntry {
 // Shutdown destroys every live window before discarding a Server instance
 // (e.g. on display-mode change).
 func (ws *Server) Shutdown() {
+	ws.StopPhysicalKeyboard()
+	if ws.feedbackUnsub != nil {
+		ws.feedbackUnsub()
+		ws.feedbackUnsub = nil
+	}
 	for _, w := range ws.windows {
 		if w.lifecycle != LifecycleDestroyed {
 			w.Destroy()
 		}
 	}
 	ws.windows = nil
-	ws.mwm = nil
+	ws.multi = nil
 	ws.focusedWindow = nil
 	ws.keyboardFocus = nil
 }
@@ -1055,7 +1179,7 @@ func (ws *Server) InvalidateAll() {
 //  1. Produce input events from this frame's Ebiten state.
 //  2. Update each window's published SafeArea.
 //  3. Run main-thread system UI (home, recents, keyboard, status bar, curtain, lock).
-//  4. Multi-window manager consumes its events (divider drag, pip drag, title drag).
+//  4. Multi-window state consumes its events (divider drag, pip drag, title drag).
 //  5. Update focus from EventDown in any window's display rect.
 //  6. For each window: animate, update app content if needed, drain commands.
 //  7. Purge fully hidden windows; check if multi-window anchors are still alive.
@@ -1063,6 +1187,7 @@ func (ws *Server) Update() {
 	now := time.Now()
 	ws.deliverScheduledNotices(now)
 	events := ws.inputProducer.Poll()
+	keyEvents := ws.drainPhysicalKeyEvents()
 	cx, cy := input.MouseCursorPosition()
 	cursor := draws.XY{X: cx, Y: cy}
 	locked := ws.IsLocked()
@@ -1131,21 +1256,21 @@ func (ws *Server) Update() {
 		ws.lock.Update(lockFrame)
 	}
 
-	// Multi-window manager: consume divider / pip / title-bar drag events
-	// before the per-window routing step. The manager also maintains its own
+	// Multi-window state: consume divider / pip / title-bar drag events
+	// before the per-window routing step. The state object also maintains its own
 	// event buffers (pipFrameEvents / mainFrameEvents) for PiP mode.
-	if !gateBelow && ws.mwm != nil && ws.mwm.mode != multiModeNone {
+	if !gateBelow && ws.multi != nil && ws.multi.mode != multiModeNone {
 		if len(events) > 0 {
 			ws.invalidateScene()
 		}
-		switch ws.mwm.mode {
+		switch ws.multi.mode {
 		case multiModeSplit:
-			events = ws.mwm.updateSplit(events)
+			events = ws.multi.updateSplit(events)
 		case multiModePip:
-			ws.mwm.updatePip(events)
+			ws.multi.updatePip(events)
 		case multiModeFreeform:
 			var newFocus *Window
-			events, newFocus = ws.mwm.updateFreeform(events, ws.windows, ws.focusedWindow)
+			events, newFocus = ws.multi.updateFreeform(events, ws.windows, ws.focusedWindow)
 			if newFocus != nil {
 				ws.focusedWindow = newFocus
 			}
@@ -1154,7 +1279,7 @@ func (ws *Server) Update() {
 
 	// Update focus: any EventDown inside a window's display rect focuses it.
 	// In fullscreen mode this is a no-op (activeWindow() handles routing).
-	if !gateBelow && ws.mwm != nil && ws.mwm.mode != multiModeNone {
+	if !gateBelow && ws.multi != nil && ws.multi.mode != multiModeNone {
 		for _, ev := range events {
 			if ev.Kind != input.EventDown {
 				continue
@@ -1180,7 +1305,7 @@ func (ws *Server) Update() {
 		ws.logLifecycleChange(w, before)
 
 		if w.lifecycle == LifecycleShown {
-			frame := ws.frameForWindow(w, cursor, events, active, gateBelow)
+			frame := ws.frameForWindow(w, cursor, events, keyEvents, active, gateBelow)
 
 			// Implicit dirty tracking: only update app content when there is
 			// something to react to.
@@ -1193,11 +1318,12 @@ func (ws *Server) Update() {
 			// ctx.Invalidate() from Update while the animation is in-flight so
 			// ticks continue until it completes.
 			hasEvents := len(frame.Events) > 0
+			hasKeyEvents := len(frame.KeyEvents) > 0
 			animActive := !w.anim.Done()
 			needsWakeup := w.ctx.invalidated.CompareAndSwap(true, false)
 			timerDue := w.ctx.consumeWakeDue(now)
 
-			if hasEvents || animActive || needsWakeup || timerDue {
+			if hasEvents || hasKeyEvents || animActive || needsWakeup || timerDue {
 				w.UpdateApp(frame) // marks canvasDirty = true internally
 			}
 
@@ -1243,9 +1369,9 @@ func (ws *Server) Update() {
 	ws.windows = live
 
 	// If a split/pip anchor window was destroyed, exit that mode cleanly.
-	if ws.mwm != nil && ws.mwm.mode != multiModeNone {
-		ws.mwm.cleanup(ws.windows)
-		if ws.mwm.mode == multiModeNone {
+	if ws.multi != nil && ws.multi.mode != multiModeNone {
+		ws.multi.cleanup(ws.windows)
+		if ws.multi.mode == multiModeNone {
 			ws.focusedWindow = nil
 			ws.log("multi-window auto-exit (anchor destroyed)")
 		}
@@ -1256,15 +1382,23 @@ func (ws *Server) Update() {
 	}
 }
 
+func (ws *Server) drainPhysicalKeyEvents() []input.KeyEvent {
+	if ws.physicalKeyboard == nil {
+		return nil
+	}
+	return ws.physicalKeyboard.DrainEvents()
+}
+
 // frameForWindow builds the mosapp.Frame to send to window w for this tick.
 // In fullscreen mode the active window receives only canvas-local events inside
 // the screen bounds; in multi-window modes events are filtered to each window's
 // display rect and transformed to canvas-local coordinates.
-func (ws *Server) frameForWindow(w *Window, cursor draws.XY, events []input.Event, active *Window, gateBelow bool) mosapp.Frame {
+func (ws *Server) frameForWindow(w *Window, cursor draws.XY, events []input.Event, keyEvents []input.KeyEvent, active *Window, gateBelow bool) mosapp.Frame {
 	var windowEvents []input.Event
+	var windowKeyEvents []input.KeyEvent
 
 	if !gateBelow {
-		if ws.mwm == nil || ws.mwm.mode == multiModeNone {
+		if ws.multi == nil || ws.multi.mode == multiModeNone {
 			// Fullscreen: only the topmost active window gets events inside
 			// the phone canvas. Simulator chrome clicks live outside this rect
 			// and must not leak into app content.
@@ -1274,17 +1408,17 @@ func (ws *Server) frameForWindow(w *Window, cursor draws.XY, events []input.Even
 				windowEvents = filterEventsByRect(events, center, size, w.captured)
 			}
 		} else {
-			switch ws.mwm.mode {
+			switch ws.multi.mode {
 			case multiModeSplit:
 				// Both split windows receive events filtered to their rect.
-				if w == ws.mwm.splitPrimary || w == ws.mwm.splitSecondary {
+				if w == ws.multi.splitPrimary || w == ws.multi.splitSecondary {
 					windowEvents = filterEventsByRect(events, w.anim.Pos(), w.anim.Size(), w.captured)
 				}
 			case multiModePip:
-				if w == ws.mwm.pipWindow {
-					windowEvents = ws.mwm.pipFrameEvents
+				if w == ws.multi.pipWindow {
+					windowEvents = ws.multi.pipFrameEvents
 				} else {
-					windowEvents = ws.mwm.mainFrameEvents
+					windowEvents = ws.multi.mainFrameEvents
 				}
 			case multiModeFreeform:
 				// Only the focused window receives events (in its rect).
@@ -1293,18 +1427,25 @@ func (ws *Server) frameForWindow(w *Window, cursor draws.XY, events []input.Even
 				}
 			}
 		}
+		if ws.keyboardFocus != nil {
+			if w == ws.keyboardFocus {
+				windowKeyEvents = keyEvents
+			}
+		} else if w == active {
+			windowKeyEvents = keyEvents
+		}
 	}
 
 	// Fullscreen windows need no coordinate transform (canvas == screen).
 	if w.mode == ModeFullscreen {
-		return mosapp.Frame{Cursor: cursor, Events: windowEvents}
+		return mosapp.Frame{Cursor: cursor, Events: windowEvents, KeyEvents: windowKeyEvents}
 	}
 	if w.mode == ModeSplit {
-		return w.ToSplitCanvasFrame(mosapp.Frame{Cursor: cursor, Events: windowEvents})
+		return w.ToSplitCanvasFrame(mosapp.Frame{Cursor: cursor, Events: windowEvents, KeyEvents: windowKeyEvents})
 	}
 	// Non-fullscreen: translate from display-rect space to canvas space.
 	return w.ToCanvasFrame(
-		mosapp.Frame{Cursor: cursor, Events: windowEvents},
+		mosapp.Frame{Cursor: cursor, Events: windowEvents, KeyEvents: windowKeyEvents},
 		ws.ScreenW, ws.ScreenH,
 	)
 }
@@ -1330,8 +1471,8 @@ func (ws *Server) Draw(dst draws.Image) {
 
 	// In PiP mode, draw the PiP border BEFORE the pip window so the
 	// window sprite renders on top of the border.
-	if ws.mwm != nil && ws.mwm.mode == multiModePip {
-		ws.mwm.drawPip(dst)
+	if ws.multi != nil && ws.multi.mode == multiModePip {
+		ws.multi.drawPip(dst)
 	}
 
 	for _, w := range ws.windows {
@@ -1342,12 +1483,12 @@ func (ws *Server) Draw(dst draws.Image) {
 	}
 
 	// Multi-window overlays drawn on top of window content.
-	if ws.mwm != nil {
-		switch ws.mwm.mode {
+	if ws.multi != nil {
+		switch ws.multi.mode {
 		case multiModeSplit:
-			ws.mwm.drawSplit(dst)
+			ws.multi.drawSplit(dst)
 		case multiModeFreeform:
-			ws.mwm.drawFreeform(dst, ws.windows, ws.focusedWindow)
+			ws.multi.drawFreeform(dst, ws.windows, ws.focusedWindow)
 		}
 	}
 

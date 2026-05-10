@@ -156,7 +156,9 @@ func (a *ShowcaseApp) Build() comp.Node {
 func (a *ShowcaseApp) Update(frame mosapp.Frame) { a.ui.Update(frame) }
 func (a *ShowcaseApp) Draw(dst draws.Image)      { a.ui.Draw(dst) }
 
-func (a *ShowcaseApp) OnCreate()  {}
+func (a *ShowcaseApp) OnCreate(ctx mosapp.Context) {
+	a.ctx = ctx
+}
 func (a *ShowcaseApp) OnResume()  {}
 func (a *ShowcaseApp) OnPause()   {}
 func (a *ShowcaseApp) OnDestroy() {}

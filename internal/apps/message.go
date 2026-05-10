@@ -272,6 +272,7 @@ func (m *MessageApp) updateThread(frame mosapp.Frame) {
 		}
 	}
 	m.composer.PollKeyboard()
+	m.handleComposerAction()
 
 	if m.send.Update(frame) {
 		m.sendCurrent()
@@ -280,6 +281,27 @@ func (m *MessageApp) updateThread(frame mosapp.Frame) {
 		if ev.Kind == input.EventUp && ev.Pos.Y < m.composerTop() && !m.composer.IsFocused() {
 			m.ctx.HideKeyboard()
 		}
+	}
+}
+
+func (m *MessageApp) handleComposerAction() {
+	switch m.composer.ConsumeAction() {
+	case ui.TextEditCopy:
+		if text := m.composer.SelectedText(); text != "" {
+			m.ctx.CopyText(text)
+			m.ctx.ShowToast("Copied")
+		}
+	case ui.TextEditCut:
+		if text := m.composer.DeleteSelection(); text != "" {
+			m.ctx.CopyText(text)
+			m.ctx.ShowToast("Cut")
+		}
+	case ui.TextEditPaste:
+		if text := m.ctx.ClipboardText(); text != "" {
+			m.composer.InsertText(text)
+		}
+	case ui.TextEditSelectAll:
+		m.composer.SelectAll()
 	}
 }
 

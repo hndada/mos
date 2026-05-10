@@ -1,6 +1,9 @@
 package windowing
 
 import (
+	"fmt"
+	"strconv"
+
 	mosapp "github.com/hndada/mos/internal/app"
 )
 
@@ -19,6 +22,8 @@ type windowProc struct {
 	// windowing server on the main goroutine each frame.
 	shouldClose   bool
 	pendingLaunch string
+	crashed       bool
+	crashMessage  string
 }
 
 func newWindowProc() *windowProc {
@@ -31,16 +36,23 @@ func (p *windowProc) create(content mosapp.Content, ctx *windowContext) {
 	if content == nil {
 		return
 	}
-	if lc, ok := content.(mosapp.Lifecycle); ok {
-		lc.OnCreate(ctx)
-	}
+	p.safeCall("OnCreate", func() {
+		if lc, ok := content.(mosapp.Creator); ok {
+			lc.OnCreate(ctx)
+		}
+	})
 }
 
 func (p *windowProc) update(content mosapp.Content, frame mosapp.Frame) {
-	if content == nil {
+	if content == nil || p.crashed {
 		return
 	}
-	content.Update(frame)
+	p.safeCall("Update", func() {
+		content.Update(frame)
+	})
+	if p.crashed {
+		return
+	}
 
 	// Honour the legacy ShouldClose() opt-in without letting the server read
 	// app-owned fields directly.
@@ -53,21 +65,40 @@ func (p *windowProc) update(content mosapp.Content, frame mosapp.Frame) {
 }
 
 func (p *windowProc) resume(content mosapp.Content) {
-	if lc, ok := content.(mosapp.Lifecycle); ok {
-		lc.OnResume()
-	}
+	p.safeCall("OnResume", func() {
+		if lc, ok := content.(mosapp.Resumer); ok {
+			lc.OnResume()
+		}
+	})
 }
 
 func (p *windowProc) pause(content mosapp.Content) {
-	if lc, ok := content.(mosapp.Lifecycle); ok {
-		lc.OnPause()
-	}
+	p.safeCall("OnPause", func() {
+		if lc, ok := content.(mosapp.Pauser); ok {
+			lc.OnPause()
+		}
+	})
 }
 
 func (p *windowProc) destroy(content mosapp.Content) {
-	if lc, ok := content.(mosapp.Lifecycle); ok {
-		lc.OnDestroy()
+	p.safeCall("OnDestroy", func() {
+		if lc, ok := content.(mosapp.Destroyer); ok {
+			lc.OnDestroy()
+		}
+	})
+}
+
+func (p *windowProc) safeCall(phase string, fn func()) {
+	if p.crashed {
+		return
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			p.crashed = true
+			p.crashMessage = phase + ": " + fmt.Sprint(r)
+		}
+	}()
+	fn()
 }
 
 // drain consumes all queued commands from the app and dispatches them.
@@ -94,6 +125,9 @@ func (p *windowProc) drain(ws *Server, w *Window) {
 				ws.SetKeepScreenOn(w.AppID(), c.Enabled)
 			case CmdSetPreferredOrientation:
 				ws.SetPreferredOrientation(w.AppID(), c.Orientation)
+			case CmdSetSecureContent:
+				w.secure = c.Enabled
+				ws.log("secure content " + w.AppID() + "=" + strconv.FormatBool(c.Enabled))
 			case CmdOpenURL:
 				ws.OpenURL(c.URL)
 			case CmdShareText:
@@ -122,6 +156,8 @@ func (p *windowProc) drain(ws *Server, w *Window) {
 				ws.SetDarkMode(c.Enabled)
 			case CmdVibrate:
 				ws.Vibrate(c.Duration)
+			case CmdPlaySound:
+				ws.PlaySound(c.Sound)
 			case CmdRequestFocus:
 				ws.grantFocus(w)
 			case CmdReleaseFocus:

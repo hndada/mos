@@ -11,17 +11,32 @@ const (
 	ModeFullscreen Mode = iota
 
 	// ModeSplit clips the full-size app surface into a fraction of the screen.
-	// The multiWindowManager owns the pane geometry.
+	// The multiWindowState owns the pane geometry.
 	ModeSplit
 
 	// ModePip (picture-in-picture) is a small always-on-top overlay.
-	// The multiWindowManager owns its corner position and drag behaviour.
+	// The multiWindowState owns its corner position and drag behaviour.
 	ModePip
 
 	// ModeFloat lets the window occupy an arbitrary draggable rect.
-	// The multiWindowManager provides the title-bar drag handle.
+	// The multiWindowState provides the title-bar drag handle.
 	ModeFloat
 )
+
+func (m Mode) String() string {
+	switch m {
+	case ModeFullscreen:
+		return "fullscreen"
+	case ModeSplit:
+		return "split"
+	case ModePip:
+		return "pip"
+	case ModeFloat:
+		return "float"
+	default:
+		return "unknown"
+	}
+}
 
 // Placement is the desired display rect for a window in screen space.
 // Center is the screen-space midpoint; Size is the display dimensions.

@@ -130,6 +130,9 @@ func (c *windowContext) SetKeepScreenOn(enabled bool) {
 func (c *windowContext) SetPreferredOrientation(o mosapp.Orientation) {
 	c.proc.cmdCh <- CmdSetPreferredOrientation{Orientation: o}
 }
+func (c *windowContext) SetSecureContent(enabled bool) {
+	c.proc.cmdCh <- CmdSetSecureContent{Enabled: enabled}
+}
 func (c *windowContext) OpenURL(rawURL string) {
 	c.proc.cmdCh <- CmdOpenURL{URL: rawURL}
 }
@@ -252,6 +255,9 @@ func (c *windowContext) RequestPermission(p mosapp.Permission) mosapp.Permission
 
 func (c *windowContext) Vibrate(duration time.Duration) {
 	c.proc.cmdCh <- CmdVibrate{Duration: duration}
+}
+func (c *windowContext) PlaySound(sound mosapp.Sound) {
+	c.proc.cmdCh <- CmdPlaySound{Sound: sound}
 }
 
 func (c *windowContext) RequestAudioFocus() bool { return c.ws.RequestAudioFocus(c.appID) }

@@ -67,13 +67,17 @@ func (a *ClipsApp) OnDestroy() {
 }
 
 func (a *ClipsApp) layout() {
+	vp := draws.NewViewport(a.screenW, a.screenH)
 	sa := a.ctx.SafeArea()
-	y := a.screenH - max(200, sa.Bottom+190)
-	a.nextBtn = ui.NewButton("Next", 13, a.screenW-92, y, 72, 34, color.RGBA{255, 255, 255, 45})
-	a.likeBtn = ui.NewButton("Like", 13, a.screenW-92, y+44, 72, 34, color.RGBA{255, 45, 85, 255})
-	a.saveBtn = ui.NewButton("Save", 13, a.screenW-92, y+88, 72, 34, color.RGBA{70, 76, 90, 255})
-	a.shareBtn = ui.NewButton("Share", 13, a.screenW-92, y+132, 72, 34, color.RGBA{10, 132, 255, 255})
-	a.recordBtn = ui.NewButton("Record", 13, 20, y+132, 92, 34, color.RGBA{255, 45, 85, 255})
+	btnW, btnH := vp.X(0.19), vp.Y(0.041)
+	gap := vp.Y(0.012)
+	y := a.screenH - max(vp.Y(0.24), sa.Bottom+vp.Y(0.23))
+	x := a.screenW - vp.X(0.055) - btnW
+	a.nextBtn = ui.NewButton("Next", 13, x, y, btnW, btnH, color.RGBA{255, 255, 255, 45})
+	a.likeBtn = ui.NewButton("Like", 13, x, y+(btnH+gap), btnW, btnH, color.RGBA{255, 45, 85, 255})
+	a.saveBtn = ui.NewButton("Save", 13, x, y+(btnH+gap)*2, btnW, btnH, color.RGBA{70, 76, 90, 255})
+	a.shareBtn = ui.NewButton("Share", 13, x, y+(btnH+gap)*3, btnW, btnH, color.RGBA{10, 132, 255, 255})
+	a.recordBtn = ui.NewButton("Record", 13, vp.X(0.055), y+(btnH+gap)*3, vp.X(0.245), btnH, color.RGBA{255, 45, 85, 255})
 }
 
 func (a *ClipsApp) Update(frame mosapp.Frame) {
@@ -84,6 +88,7 @@ func (a *ClipsApp) Update(frame mosapp.Frame) {
 	if a.likeBtn.Update(frame) {
 		a.liked[a.index] = !a.liked[a.index]
 		a.ctx.Vibrate(20 * time.Millisecond)
+		a.ctx.PlaySound(mosapp.SoundSuccess)
 	}
 	if a.saveBtn.Update(frame) {
 		a.saved[a.index] = !a.saved[a.index]
@@ -96,6 +101,7 @@ func (a *ClipsApp) Update(frame mosapp.Frame) {
 	if a.recordBtn.Update(frame) {
 		if _, ok := a.ctx.CapturePhoto(); ok {
 			a.ctx.PostNotice(mosapp.Notice{Title: "Clips", Body: "Captured a new clip cover"})
+			a.ctx.PlaySound(mosapp.SoundSuccess)
 		}
 	}
 	if a.ctx.Now().Second()%3 == 0 {
@@ -124,17 +130,18 @@ func (a *ClipsApp) Draw(dst draws.Image) {
 	a.layout()
 	a.paintVideo(dst)
 	title := flowText("Clips", 22, color.RGBA{255, 255, 255, 245})
-	title.Locate(20, a.ctx.SafeArea().Top+24, draws.LeftMiddle)
+	vp := draws.NewViewport(a.screenW, a.screenH)
+	title.Locate(vp.X(0.055), a.ctx.SafeArea().Top+vp.Y(0.029), draws.LeftMiddle)
 	title.Draw(dst)
 
-	y := a.screenH - max(120, a.ctx.SafeArea().Bottom+110)
+	y := a.screenH - max(vp.Y(0.145), a.ctx.SafeArea().Bottom+vp.Y(0.132))
 	for i, line := range wrapText(a.captions[a.index], 28) {
 		t := flowText(line, 15, color.RGBA{255, 255, 255, 235})
-		t.Locate(20, y+float64(i)*20, draws.LeftTop)
+		t.Locate(vp.X(0.055), y+float64(i)*vp.Y(0.024), draws.LeftTop)
 		t.Draw(dst)
 	}
 	if a.liked[a.index] {
-		a.drawPill(dst, "Liked", a.screenW-98, y-50, color.RGBA{255, 45, 85, 230})
+		a.drawPill(dst, "Liked", a.screenW-vp.X(0.265), y-vp.Y(0.06), color.RGBA{255, 45, 85, 230})
 	}
 	a.nextBtn.Draw(dst)
 	a.likeBtn.Draw(dst)
@@ -146,21 +153,24 @@ func (a *ClipsApp) Draw(dst draws.Image) {
 func (a *ClipsApp) paintVideo(dst draws.Image) {
 	dst.Fill(color.RGBA{8, 9, 13, 255})
 	cols := a.palette[a.index]
+	vp := draws.NewViewport(a.screenW, a.screenH)
 	for i, c := range cols {
-		vector.DrawFilledRect(dst.Image, float32(i)*float32(a.screenW)/3, 0, float32(a.screenW)/3+1, float32(a.screenH), c, true)
+		vector.DrawFilledRect(dst.Image, float32(vp.X(float64(i)/3)), 0, float32(vp.X(1.0/3.0))+1, float32(vp.Y(1)), c, true)
 	}
 	pulse := 0.18 + float32(a.ctx.Now().UnixMilli()%1200)/1200*0.12
-	vector.DrawFilledCircle(dst.Image, float32(a.screenW)*0.58, float32(a.screenH)*0.38, float32(a.screenW)*pulse, color.RGBA{255, 255, 255, 34}, true)
-	vector.DrawFilledCircle(dst.Image, float32(a.screenW)*0.30, float32(a.screenH)*0.70, float32(a.screenW)*0.16, color.RGBA{0, 0, 0, 58}, true)
+	vector.DrawFilledCircle(dst.Image, float32(vp.X(0.58)), float32(vp.Y(0.38)), float32(vp.U(float64(pulse))), color.RGBA{255, 255, 255, 34}, true)
+	vector.DrawFilledCircle(dst.Image, float32(vp.X(0.30)), float32(vp.Y(0.70)), float32(vp.U(0.16)), color.RGBA{0, 0, 0, 58}, true)
 }
 
 func (a *ClipsApp) drawPill(dst draws.Image, label string, x, y float64, c color.RGBA) {
-	img := roundedRectImage(78, 28, 14, c)
+	vp := draws.NewViewport(a.screenW, a.screenH)
+	w, h := vp.X(0.21), vp.Y(0.034)
+	img := roundedRectImage(w, h, vp.U(0.035), c)
 	sp := draws.NewSprite(img)
 	sp.Locate(x, y, draws.LeftTop)
 	sp.Draw(dst)
 	t := flowText(label, 12, color.RGBA{255, 255, 255, 255})
-	t.Locate(x+39, y+14, draws.CenterMiddle)
+	t.Locate(x+w/2, y+h/2, draws.CenterMiddle)
 	t.Draw(dst)
 }
 
@@ -195,12 +205,15 @@ func (a *RideApp) OnPause()   { a.ctx.HideKeyboard() }
 func (a *RideApp) OnDestroy() {}
 
 func (a *RideApp) layout() {
+	vp := draws.NewViewport(a.screenW, a.screenH)
 	sa := a.ctx.SafeArea()
-	panelY := a.screenH - max(188, sa.Bottom+178)
-	a.destination = ui.NewTextField(18, panelY+48, a.screenW-36, "Where to?")
-	a.requestBtn = ui.NewButton("Request", 14, 18, panelY+104, a.screenW-36, 38, color.RGBA{0, 160, 110, 255})
-	a.shareBtn = ui.NewButton("Share ETA", 13, 18, panelY+150, (a.screenW-48)/2, 34, color.RGBA{10, 132, 255, 255})
-	a.cancelBtn = ui.NewButton("Cancel", 13, 30+(a.screenW-48)/2, panelY+150, (a.screenW-48)/2, 34, color.RGBA{72, 76, 86, 255})
+	panelY := a.screenH - max(vp.Y(0.225), sa.Bottom+vp.Y(0.214))
+	inset := vp.X(0.048)
+	a.destination = ui.NewTextField(inset, panelY+vp.Y(0.058), a.screenW-inset*2, "Where to?")
+	a.requestBtn = ui.NewButton("Request", 14, inset, panelY+vp.Y(0.125), a.screenW-inset*2, vp.Y(0.046), color.RGBA{0, 160, 110, 255})
+	halfW := (a.screenW - inset*3) / 2
+	a.shareBtn = ui.NewButton("Share ETA", 13, inset, panelY+vp.Y(0.18), halfW, vp.Y(0.041), color.RGBA{10, 132, 255, 255})
+	a.cancelBtn = ui.NewButton("Cancel", 13, inset*2+halfW, panelY+vp.Y(0.18), halfW, vp.Y(0.041), color.RGBA{72, 76, 86, 255})
 }
 
 func (a *RideApp) Update(frame mosapp.Frame) {
@@ -231,16 +244,18 @@ func (a *RideApp) Draw(dst draws.Image) {
 	a.layout()
 	dst.Fill(color.RGBA{216, 224, 218, 255})
 	a.drawMap(dst)
-	panelY := a.screenH - max(198, a.ctx.SafeArea().Bottom+188)
-	panel := roundedRectImage(a.screenW-24, 180, 16, color.RGBA{20, 24, 29, 245})
+	vp := draws.NewViewport(a.screenW, a.screenH)
+	inset := vp.X(0.032)
+	panelY := a.screenH - max(vp.Y(0.238), a.ctx.SafeArea().Bottom+vp.Y(0.226))
+	panel := roundedRectImage(a.screenW-inset*2, vp.Y(0.216), vp.U(0.04), color.RGBA{20, 24, 29, 245})
 	sp := draws.NewSprite(panel)
-	sp.Locate(12, panelY, draws.LeftTop)
+	sp.Locate(inset, panelY, draws.LeftTop)
 	sp.Draw(dst)
 	title := flowText("Ride", 22, color.RGBA{255, 255, 255, 255})
-	title.Locate(26, panelY+23, draws.LeftMiddle)
+	title.Locate(inset+vp.X(0.038), panelY+vp.Y(0.028), draws.LeftMiddle)
 	title.Draw(dst)
 	st := flowText(a.status, 13, flowTextSoft)
-	st.Locate(86, panelY+24, draws.LeftMiddle)
+	st.Locate(inset+vp.X(0.20), panelY+vp.Y(0.029), draws.LeftMiddle)
 	st.Draw(dst)
 	a.destination.Draw(dst)
 	a.requestBtn.Draw(dst)
@@ -249,18 +264,19 @@ func (a *RideApp) Draw(dst draws.Image) {
 }
 
 func (a *RideApp) drawMap(dst draws.Image) {
+	vp := draws.NewViewport(a.screenW, a.screenH)
 	for i := 0; i < 8; i++ {
-		x := float32(i) * float32(a.screenW) / 7
-		vector.StrokeLine(dst.Image, x, 0, x-90, float32(a.screenH), 3, color.RGBA{180, 194, 184, 255}, true)
+		x := float32(vp.X(float64(i) / 7))
+		vector.StrokeLine(dst.Image, x, 0, x-float32(vp.X(0.24)), float32(vp.Y(1)), float32(vp.U(0.008)), color.RGBA{180, 194, 184, 255}, true)
 	}
 	for i := 0; i < 7; i++ {
-		y := float32(i) * float32(a.screenH) / 6
-		vector.StrokeLine(dst.Image, 0, y, float32(a.screenW), y+40, 3, color.RGBA{190, 202, 192, 255}, true)
+		y := float32(vp.Y(float64(i) / 6))
+		vector.StrokeLine(dst.Image, 0, y, float32(vp.X(1)), y+float32(vp.Y(0.048)), float32(vp.U(0.008)), color.RGBA{190, 202, 192, 255}, true)
 	}
-	vector.DrawFilledCircle(dst.Image, float32(a.screenW)*0.32, float32(a.screenH)*0.42, 9, color.RGBA{0, 122, 255, 255}, true)
-	vector.DrawFilledCircle(dst.Image, float32(a.screenW)*0.68, float32(a.screenH)*0.34, 10, color.RGBA{0, 160, 110, 255}, true)
+	vector.DrawFilledCircle(dst.Image, float32(vp.X(0.32)), float32(vp.Y(0.42)), float32(vp.U(0.024)), color.RGBA{0, 122, 255, 255}, true)
+	vector.DrawFilledCircle(dst.Image, float32(vp.X(0.68)), float32(vp.Y(0.34)), float32(vp.U(0.027)), color.RGBA{0, 160, 110, 255}, true)
 	if a.stage == 1 {
-		vector.StrokeLine(dst.Image, float32(a.screenW)*0.32, float32(a.screenH)*0.42, float32(a.screenW)*0.68, float32(a.screenH)*0.34, 5, color.RGBA{0, 160, 110, 255}, true)
+		vector.StrokeLine(dst.Image, float32(vp.X(0.32)), float32(vp.Y(0.42)), float32(vp.X(0.68)), float32(vp.Y(0.34)), float32(vp.U(0.013)), color.RGBA{0, 160, 110, 255}, true)
 	}
 }
 
@@ -295,18 +311,21 @@ func (a *MarketApp) OnPause()   { a.persist() }
 func (a *MarketApp) OnDestroy() { a.persist() }
 
 func (a *MarketApp) layout() {
+	vp := draws.NewViewport(a.screenW, a.screenH)
 	sa := a.ctx.SafeArea()
-	top := max(118, sa.Top+112)
-	bottom := max(72, sa.Bottom+64)
-	a.search = ui.NewTextField(16, sa.Top+58, a.screenW-32, "Search market")
-	a.checkout = ui.NewButton("Checkout", 14, 16, a.screenH-bottom+12, a.screenW-32, 38, color.RGBA{255, 149, 0, 255})
+	top := max(vp.Y(0.142), sa.Top+vp.Y(0.135))
+	bottom := max(vp.Y(0.086), sa.Bottom+vp.Y(0.077))
+	inset := vp.X(0.043)
+	a.search = ui.NewTextField(inset, sa.Top+vp.Y(0.07), a.screenW-inset*2, "Search market")
+	a.checkout = ui.NewButton("Checkout", 14, inset, a.screenH-bottom+vp.Y(0.014), a.screenW-inset*2, vp.Y(0.046), color.RGBA{255, 149, 0, 255})
 	a.scroll.Size = draws.XY{X: a.screenW, Y: a.screenH - top - bottom}
 	a.scroll.Locate(0, top, draws.LeftTop)
-	a.scroll.ContentSize = draws.XY{X: a.screenW, Y: 4*122 + 26}
+	rowH := vp.Y(0.147)
+	a.scroll.ContentSize = draws.XY{X: a.screenW, Y: 4*rowH + vp.Y(0.031)}
 	a.addBtns = a.addBtns[:0]
 	for i := 0; i < 4; i++ {
-		y := a.scroll.Position.Y + 18 + float64(i)*122 - a.scroll.Offset().Y
-		a.addBtns = append(a.addBtns, ui.NewTriggerButton(a.screenW-94, y+62, 72, 36))
+		y := a.scroll.Position.Y + vp.Y(0.022) + float64(i)*rowH - a.scroll.Offset().Y
+		a.addBtns = append(a.addBtns, ui.NewTriggerButton(a.screenW-vp.X(0.252), y+vp.Y(0.075), vp.X(0.193), vp.Y(0.043)))
 	}
 }
 
@@ -322,6 +341,7 @@ func (a *MarketApp) Update(frame mosapp.Frame) {
 			a.cart++
 			a.ctx.SetBadge(a.cart)
 			a.ctx.Vibrate(10 * time.Millisecond)
+			a.ctx.PlaySound(mosapp.SoundTap)
 			a.ctx.ShowToast("Added to cart")
 		}
 	}
@@ -340,11 +360,13 @@ func (a *MarketApp) persist() {
 func (a *MarketApp) Draw(dst draws.Image) {
 	a.layout()
 	dst.Fill(color.RGBA{245, 246, 248, 255})
+	vp := draws.NewViewport(a.screenW, a.screenH)
+	inset := vp.X(0.043)
 	title := flowText("Market", 24, color.RGBA{20, 22, 26, 255})
-	title.Locate(16, a.ctx.SafeArea().Top+30, draws.LeftMiddle)
+	title.Locate(inset, a.ctx.SafeArea().Top+vp.Y(0.036), draws.LeftMiddle)
 	title.Draw(dst)
 	cart := flowText("Cart "+itoa(a.cart), 13, color.RGBA{70, 75, 85, 255})
-	cart.Locate(a.screenW-16, a.ctx.SafeArea().Top+31, draws.RightMiddle)
+	cart.Locate(a.screenW-inset, a.ctx.SafeArea().Top+vp.Y(0.037), draws.RightMiddle)
 	cart.Draw(dst)
 	a.search.Draw(dst)
 	a.drawProducts(dst)
@@ -354,24 +376,27 @@ func (a *MarketApp) Draw(dst draws.Image) {
 func (a *MarketApp) drawProducts(dst draws.Image) {
 	names := []string{"Everyday Pack", "Creator Light", "Pocket Stand", "Travel Cable"}
 	prices := []string{"$42", "$89", "$18", "$12"}
+	vp := draws.NewViewport(a.screenW, a.screenH)
+	inset := vp.X(0.043)
+	rowH := vp.Y(0.147)
 	for i, name := range names {
-		y := a.scroll.Position.Y + 18 + float64(i)*122 - a.scroll.Offset().Y
-		if y < a.scroll.Position.Y-120 || y > a.scroll.Position.Y+a.scroll.H() {
+		y := a.scroll.Position.Y + vp.Y(0.022) + float64(i)*rowH - a.scroll.Offset().Y
+		if y < a.scroll.Position.Y-rowH || y > a.scroll.Position.Y+a.scroll.H() {
 			continue
 		}
-		card := roundedRectImage(a.screenW-32, 104, 12, color.RGBA{255, 255, 255, 255})
+		card := roundedRectImage(a.screenW-inset*2, vp.Y(0.125), vp.U(0.032), color.RGBA{255, 255, 255, 255})
 		sp := draws.NewSprite(card)
-		sp.Locate(16, y, draws.LeftTop)
+		sp.Locate(inset, y, draws.LeftTop)
 		sp.Draw(dst)
 		sw := color.RGBA{uint8(80 + i*34), uint8(130 + i*18), uint8(190 - i*22), 255}
-		vector.DrawFilledRect(dst.Image, 30, float32(y+18), 62, 62, sw, true)
+		vector.DrawFilledRect(dst.Image, float32(inset+vp.X(0.038)), float32(y+vp.Y(0.022)), float32(vp.U(0.166)), float32(vp.U(0.166)), sw, true)
 		t := flowText(name, 16, color.RGBA{20, 22, 26, 255})
-		t.Locate(108, y+22, draws.LeftTop)
+		t.Locate(inset+vp.X(0.247), y+vp.Y(0.026), draws.LeftTop)
 		t.Draw(dst)
 		p := flowText(prices[i], 14, color.RGBA{90, 96, 106, 255})
-		p.Locate(108, y+52, draws.LeftTop)
+		p.Locate(inset+vp.X(0.247), y+vp.Y(0.063), draws.LeftTop)
 		p.Draw(dst)
-		a.drawAddText(dst, a.screenW-58, y+80)
+		a.drawAddText(dst, a.screenW-vp.X(0.156), y+vp.Y(0.096))
 	}
 }
 

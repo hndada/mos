@@ -4,7 +4,7 @@ package input
 
 import "github.com/hajimehoshi/ebiten/v2"
 
-const defaultPollingRate = 100.0 // Hz
+const defaultPollingRate = 1000.0 // Hz
 
 // newFetchKeyboardState returns closure.
 func newFetchKeyboardState(ks []Key) func() []bool {

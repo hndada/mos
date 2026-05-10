@@ -20,21 +20,26 @@ const curtainDuration = 260 * time.Millisecond
 type curtainTile struct {
 	label     string
 	on        bool
+	accent    color.RGBA
 	btn       ui.TriggerButton
 	labelText draws.Text
 	stateText draws.Text
-	publishFn func(bus *event.Bus, on bool)
+	publishFn func(c *DefaultCurtain, on bool)
 }
 
 type DefaultCurtain struct {
-	panelH float64
-	bus    *event.Bus
+	screenW float64
+	screenH float64
+	panelH  float64
+	bus     *event.Bus
 
 	overlay draws.Sprite
 	panel   draws.Sprite
 	title   draws.Text
+	date    draws.Text
 	time    draws.Text
 	tiles   []*curtainTile
+	grabber draws.Sprite
 
 	// Reusable per-tile background sprites; recoloured by Tile state at draw time.
 	tileBgOff draws.Image
@@ -72,74 +77,94 @@ type noticeItem struct {
 const maxCurtainNotices = 8
 
 func NewDefaultCurtain(screenW, screenH float64, bus *event.Bus) *DefaultCurtain {
-	panelH := screenH * 0.62
+	vp := draws.NewViewport(screenW, screenH)
+	panelH := screenH * 0.68
 	overlayImg := draws.CreateImage(screenW, screenH)
-	overlayImg.Fill(color.RGBA{0, 0, 0, 96})
+	overlayImg.Fill(color.RGBA{0, 0, 0, 118})
 	overlay := draws.NewSprite(overlayImg)
 	overlay.Locate(0, 0, draws.LeftTop)
 
 	// Semi-transparent so the blurred background shows through (frosted glass).
 	// When no blur is supplied the panel falls back to this solid-ish colour.
-	panelImg := draws.CreateImage(screenW, panelH)
-	panelImg.Fill(color.RGBA{22, 24, 32, 200})
+	panelImg := roundedRectImage(screenW, panelH+vp.Y(0.04), vp.U(0.075), color.RGBA{18, 21, 29, 226})
 	panel := draws.NewSprite(panelImg)
 
 	titleOpts := draws.NewFaceOptions()
-	titleOpts.Size = 22
-	title := draws.NewText("Curtain")
+	titleOpts.Size = 24
+	title := draws.NewText("Control Center")
 	title.SetFace(titleOpts)
-	title.Locate(18, 22, draws.LeftTop)
+	title.Locate(vp.X(0.055), vp.Y(0.038), draws.LeftTop)
+
+	dateOpts := draws.NewFaceOptions()
+	dateOpts.Size = 12
+	date := draws.NewText("")
+	date.SetFace(dateOpts)
+	date.ColorScale.Scale(1, 1, 1, 0.62)
+	date.Locate(vp.X(0.055), vp.Y(0.078), draws.LeftTop)
 
 	timeOpts := draws.NewFaceOptions()
-	timeOpts.Size = 14
+	timeOpts.Size = 18
 	clock := draws.NewText("")
 	clock.SetFace(timeOpts)
-	clock.Locate(screenW-18, 25, draws.RightTop)
+	clock.Locate(screenW-vp.X(0.055), vp.Y(0.045), draws.RightTop)
+
+	grabberImg := roundedRectImage(vp.X(0.18), vp.Y(0.006), vp.Y(0.003), color.RGBA{255, 255, 255, 95})
+	grabber := draws.NewSprite(grabberImg)
+	grabber.Locate(screenW/2, vp.Y(0.016), draws.CenterMiddle)
 
 	c := &DefaultCurtain{
+		screenW: screenW,
+		screenH: screenH,
 		panelH:  panelH,
 		bus:     bus,
 		overlay: overlay,
 		panel:   panel,
 		title:   title,
+		date:    date,
 		time:    clock,
+		grabber: grabber,
 	}
 
 	// Tile background images (one off-state, one on-state). Reused for every tile.
 	const cols = 3
-	const tilePadX = 18.0
-	const tilePadTop = 70.0
-	const tileGap = 12.0
+	tilePadX := vp.X(0.055)
+	tilePadTop := vp.Y(0.125)
+	tileGap := vp.X(0.028)
 	tileW := (screenW - tilePadX*2 - tileGap*float64(cols-1)) / float64(cols)
-	tileH := tileW * 0.78
+	tileH := tileW * 0.76
 
-	offImg := draws.CreateImage(tileW, tileH)
-	offImg.Fill(color.RGBA{56, 60, 70, 255})
-	c.tileBgOff = offImg
+	c.tileBgOff = roundedRectImage(tileW, tileH, vp.U(0.038), color.RGBA{48, 53, 65, 218})
 
-	onImg := draws.CreateImage(tileW, tileH)
-	onImg.Fill(color.RGBA{52, 132, 220, 255})
-	c.tileBgOn = onImg
+	c.tileBgOn = roundedRectImage(tileW, tileH, vp.U(0.038), color.RGBA{50, 125, 238, 238})
 
 	specs := []struct {
 		label   string
 		on      bool
-		publish func(bus *event.Bus, on bool)
+		accent  color.RGBA
+		publish func(c *DefaultCurtain, on bool)
 	}{
-		{"Wi-Fi", true, nil},
-		{"Bluetooth", false, nil},
-		{"AOD", true, func(bus *event.Bus, on bool) {
-			if bus != nil {
-				bus.Publish(event.System{Topic: event.TopicAOD, Value: on})
+		{"Wi-Fi", true, color.RGBA{52, 132, 220, 255}, nil},
+		{"Bluetooth", false, color.RGBA{88, 86, 214, 255}, nil},
+		{"Airplane", false, color.RGBA{255, 159, 64, 255}, nil},
+		{"AOD", true, color.RGBA{255, 214, 80, 255}, func(c *DefaultCurtain, on bool) {
+			if c.bus != nil {
+				c.bus.Publish(event.System{Topic: event.TopicAOD, Value: on})
 			}
 		}},
-		{"Dark Mode", false, func(bus *event.Bus, on bool) {
-			if bus != nil {
-				bus.Publish(event.System{Topic: event.TopicDarkMode, Value: on})
+		{"Dark Mode", false, color.RGBA{120, 86, 255, 255}, func(c *DefaultCurtain, on bool) {
+			if c.bus != nil {
+				c.bus.Publish(event.System{Topic: event.TopicDarkMode, Value: on})
 			}
 		}},
-		{"Focus", false, nil},
-		{"Battery", false, nil},
+		{"Focus", false, color.RGBA{255, 149, 0, 255}, nil},
+		{"DND", false, color.RGBA{170, 90, 210, 255}, nil},
+		{"Rotate", true, color.RGBA{90, 200, 250, 255}, nil},
+		{"Battery", false, color.RGBA{52, 199, 89, 255}, nil},
+		{"Clear", false, color.RGBA{110, 118, 130, 255}, func(c *DefaultCurtain, on bool) {
+			c.notices = nil
+			c.setTileByLabel("Clear", false)
+			c.feedback(mosapp.SoundSuccess, 10*time.Millisecond)
+		}},
 	}
 
 	labelOpts := draws.NewFaceOptions()
@@ -155,17 +180,19 @@ func NewDefaultCurtain(screenW, screenH float64, bus *event.Bus) *DefaultCurtain
 		t := &curtainTile{
 			label:     sp.label,
 			on:        sp.on,
+			accent:    sp.accent,
 			btn:       ui.NewTriggerButton(x, y, tileW, tileH),
 			publishFn: sp.publish,
 		}
 
 		t.labelText = draws.NewText(sp.label)
 		t.labelText.SetFace(labelOpts)
-		t.labelText.Locate(x+tileW/2, y+tileH/2-8, draws.CenterMiddle)
+		t.labelText.Locate(x+tileW*0.12, y+tileH*0.56, draws.LeftMiddle)
 
 		t.stateText = draws.NewText("")
 		t.stateText.SetFace(stateOpts)
-		t.stateText.Locate(x+tileW/2, y+tileH/2+12, draws.CenterMiddle)
+		t.stateText.ColorScale.Scale(1, 1, 1, 0.62)
+		t.stateText.Locate(x+tileW*0.12, y+tileH*0.77, draws.LeftMiddle)
 
 		c.tiles = append(c.tiles, t)
 	}
@@ -174,13 +201,11 @@ func NewDefaultCurtain(screenW, screenH float64, bus *event.Bus) *DefaultCurtain
 	tileRows := (len(specs) + cols - 1) / cols
 	c.noticeMargin = tilePadX
 	c.noticeAreaW = screenW - tilePadX*2
-	c.noticeCardH = 64
-	c.noticeCardGap = 8
-	c.noticesTop = tilePadTop + float64(tileRows)*(tileH+tileGap) + 12
+	c.noticeCardH = vp.Y(0.077)
+	c.noticeCardGap = vp.Y(0.010)
+	c.noticesTop = tilePadTop + float64(tileRows)*(tileH+tileGap) + vp.Y(0.082)
 
-	cardImg := draws.CreateImage(c.noticeAreaW, c.noticeCardH)
-	cardImg.Fill(color.RGBA{40, 44, 56, 220})
-	c.noticeCardBg = cardImg
+	c.noticeCardBg = roundedRectImage(c.noticeAreaW, c.noticeCardH, vp.U(0.032), color.RGBA{32, 37, 49, 225})
 
 	titleOpts2 := draws.NewFaceOptions()
 	titleOpts2.Size = 13
@@ -191,11 +216,13 @@ func NewDefaultCurtain(screenW, screenH float64, bus *event.Bus) *DefaultCurtain
 	bodyOpts.Size = 11
 	c.noticeBodyText = draws.NewText("")
 	c.noticeBodyText.SetFace(bodyOpts)
+	c.noticeBodyText.ColorScale.Scale(1, 1, 1, 0.68)
 
 	timeOpts2 := draws.NewFaceOptions()
 	timeOpts2.Size = 10
 	c.noticeTimeText = draws.NewText("")
 	c.noticeTimeText.SetFace(timeOpts2)
+	c.noticeTimeText.ColorScale.Scale(1, 1, 1, 0.55)
 
 	c.y = curtainAnim(-panelH, -panelH, panelH)
 	return c
@@ -209,6 +236,7 @@ func (s *DefaultCurtain) AddNotice(n mosapp.Notice) {
 	if len(s.notices) > maxCurtainNotices {
 		s.notices = s.notices[:maxCurtainNotices]
 	}
+	s.feedback(mosapp.SoundNotification, 18*time.Millisecond)
 }
 
 func curtainAnim(from, to, panelH float64) tween.Tween {
@@ -233,6 +261,7 @@ func (s *DefaultCurtain) Show() {
 	}
 	s.shown = true
 	s.y = curtainAnim(s.y.Value(), 0, s.panelH)
+	s.feedback(mosapp.SoundTap, 10*time.Millisecond)
 }
 
 func (s *DefaultCurtain) Hide() {
@@ -241,6 +270,7 @@ func (s *DefaultCurtain) Hide() {
 	}
 	s.shown = false
 	s.y = curtainAnim(s.y.Value(), -s.panelH, s.panelH)
+	s.feedback(mosapp.SoundTap, 8*time.Millisecond)
 }
 
 func (s *DefaultCurtain) Toggle() {
@@ -300,6 +330,7 @@ func (s *DefaultCurtain) setTileByLabel(label string, on bool) {
 func (s *DefaultCurtain) Update(frame mosapp.Frame) {
 	s.y.Update()
 	s.time.Text = time.Now().Format("15:04")
+	s.date.Text = time.Now().Format("Mon, Jan 2")
 
 	// Don't process input until the panel has any pixels on screen, and
 	// don't intercept after a Hide while the panel is sliding off.
@@ -325,10 +356,27 @@ func (s *DefaultCurtain) Update(frame mosapp.Frame) {
 	for _, t := range s.tiles {
 		if t.btn.Update(panelFrame) {
 			t.on = !t.on
+			if t.on {
+				s.feedback(mosapp.SoundToggleOn, 16*time.Millisecond)
+			} else {
+				s.feedback(mosapp.SoundToggleOff, 12*time.Millisecond)
+			}
 			if t.publishFn != nil {
-				t.publishFn(s.bus, t.on)
+				t.publishFn(s, t.on)
 			}
 		}
+	}
+}
+
+func (s *DefaultCurtain) feedback(sound mosapp.Sound, duration time.Duration) {
+	if s.bus != nil {
+		s.bus.Publish(event.Custom{
+			Topic: "mos/system/feedback",
+			Data: map[string]any{
+				"sound":     string(sound),
+				"vibration": duration,
+			},
+		})
 	}
 }
 
@@ -372,20 +420,56 @@ func (s *DefaultCurtain) Draw(dst draws.Image) {
 	}
 
 	panel := s.panel
-	panel.Locate(0, y, draws.LeftTop)
+	panel.Locate(0, y-draws.NewViewport(s.screenW, s.screenH).Y(0.04), draws.LeftTop)
 	panel.ColorScale.ScaleAlpha(alpha)
 	panel.Draw(dst)
 
-	s.title.Position.Y = y + 22
-	s.time.Position.Y = y + 25
+	vp := draws.NewViewport(s.screenW, s.screenH)
+	s.grabber.Position.Y = y + vp.Y(0.016)
+	s.grabber.ColorScale.ScaleAlpha(alpha)
+	s.grabber.Draw(dst)
+
+	s.title.Position.Y = y + vp.Y(0.038)
+	s.date.Position.Y = y + vp.Y(0.078)
+	s.time.Position.Y = y + vp.Y(0.045)
 	s.title.Draw(dst)
+	s.date.Draw(dst)
 	s.time.Draw(dst)
 
 	for _, t := range s.tiles {
 		s.drawTile(dst, t, y)
 	}
 
+	s.drawSliders(dst, y, alpha)
 	s.drawNotices(dst, y, alpha)
+}
+
+func (s *DefaultCurtain) drawSliders(dst draws.Image, panelY float64, alpha float32) {
+	vp := draws.NewViewport(s.screenW, s.screenH)
+	x := vp.X(0.055)
+	w := s.screenW - x*2
+	h := vp.Y(0.024)
+	y := panelY + s.noticesTop - vp.Y(0.052)
+	s.drawSlider(dst, x, y, w, h, 0.72, color.RGBA{255, 214, 80, 240}, alpha)
+	s.drawSlider(dst, x, y+vp.Y(0.032), w, h, 0.48, color.RGBA{90, 200, 250, 240}, alpha)
+}
+
+func (s *DefaultCurtain) drawSlider(dst draws.Image, x, y, w, h, value float64, accent color.RGBA, alpha float32) {
+	vp := draws.NewViewport(s.screenW, s.screenH)
+	track := draws.NewSprite(roundedRectImage(w, h, h/2, color.RGBA{255, 255, 255, 36}))
+	track.Locate(x, y, draws.LeftTop)
+	track.ColorScale.ScaleAlpha(alpha)
+	track.Draw(dst)
+
+	fill := draws.NewSprite(roundedRectImage(w*value, h, h/2, accent))
+	fill.Locate(x, y, draws.LeftTop)
+	fill.ColorScale.ScaleAlpha(alpha)
+	fill.Draw(dst)
+
+	knob := draws.NewSprite(roundedRectImage(vp.U(0.038), vp.U(0.038), vp.U(0.019), color.RGBA{255, 255, 255, 235}))
+	knob.Locate(x+w*value, y+h/2, draws.CenterMiddle)
+	knob.ColorScale.ScaleAlpha(alpha)
+	knob.Draw(dst)
 }
 
 // drawNotices renders only the notification cards visible in the panel.
@@ -406,20 +490,22 @@ func (s *DefaultCurtain) drawNotices(dst draws.Image, panelY float64, alpha floa
 		bg.Draw(dst)
 
 		s.noticeTitleText.Text = n.title
-		s.noticeTitleText.Locate(s.noticeMargin+12, cardTop+8, draws.LeftTop)
+		vp := draws.NewViewport(s.screenW, s.screenH)
+		s.noticeTitleText.Locate(s.noticeMargin+vp.X(0.035), cardTop+vp.Y(0.010), draws.LeftTop)
 		s.noticeTitleText.Draw(dst)
 
 		s.noticeBodyText.Text = n.body
-		s.noticeBodyText.Locate(s.noticeMargin+12, cardTop+28, draws.LeftTop)
+		s.noticeBodyText.Locate(s.noticeMargin+vp.X(0.035), cardTop+vp.Y(0.034), draws.LeftTop)
 		s.noticeBodyText.Draw(dst)
 
 		s.noticeTimeText.Text = n.when.Format("15:04")
-		s.noticeTimeText.Locate(s.noticeMargin+s.noticeAreaW-12, cardTop+10, draws.RightTop)
+		s.noticeTimeText.Locate(s.noticeMargin+s.noticeAreaW-vp.X(0.035), cardTop+vp.Y(0.012), draws.RightTop)
 		s.noticeTimeText.Draw(dst)
 	}
 }
 
 func (s *DefaultCurtain) drawTile(dst draws.Image, t *curtainTile, panelY float64) {
+	vp := draws.NewViewport(s.screenW, s.screenH)
 	bgImg := s.tileBgOff
 	if t.on {
 		bgImg = s.tileBgOn
@@ -428,7 +514,23 @@ func (s *DefaultCurtain) drawTile(dst draws.Image, t *curtainTile, panelY float6
 	sp.Locate(t.btn.X(), t.btn.Y()+panelY, draws.LeftTop)
 	sp.Draw(dst)
 
-	t.labelText.Position.Y = (t.btn.Y() + t.btn.H()/2 - 8) + panelY
+	iconSize := vp.U(0.072)
+	icon := roundedRectImage(iconSize, iconSize, iconSize/2, color.RGBA{255, 255, 255, 44})
+	if t.on {
+		icon = roundedRectImage(iconSize, iconSize, iconSize/2, t.accent)
+	}
+	iconSp := draws.NewSprite(icon)
+	iconSp.Locate(t.btn.X()+t.btn.W()*0.18, t.btn.Y()+t.btn.H()*0.26+panelY, draws.CenterMiddle)
+	iconSp.Draw(dst)
+
+	glyph := draws.NewText(tileGlyph(t.label))
+	glyphOpts := draws.NewFaceOptions()
+	glyphOpts.Size = 13
+	glyph.SetFace(glyphOpts)
+	glyph.Locate(t.btn.X()+t.btn.W()*0.18, t.btn.Y()+t.btn.H()*0.26+panelY, draws.CenterMiddle)
+	glyph.Draw(dst)
+
+	t.labelText.Position.Y = (t.btn.Y() + t.btn.H()*0.56) + panelY
 	t.labelText.Draw(dst)
 
 	if t.on {
@@ -436,6 +538,33 @@ func (s *DefaultCurtain) drawTile(dst draws.Image, t *curtainTile, panelY float6
 	} else {
 		t.stateText.Text = "Off"
 	}
-	t.stateText.Position.Y = (t.btn.Y() + t.btn.H()/2 + 12) + panelY
+	t.stateText.Position.Y = (t.btn.Y() + t.btn.H()*0.77) + panelY
 	t.stateText.Draw(dst)
+}
+
+func tileGlyph(label string) string {
+	switch label {
+	case "Wi-Fi":
+		return "W"
+	case "Bluetooth":
+		return "B"
+	case "AOD":
+		return "A"
+	case "Dark Mode":
+		return "D"
+	case "Focus":
+		return "F"
+	case "Battery":
+		return "%"
+	case "Airplane":
+		return "P"
+	case "DND":
+		return "!"
+	case "Rotate":
+		return "R"
+	case "Clear":
+		return "X"
+	default:
+		return label[:1]
+	}
 }

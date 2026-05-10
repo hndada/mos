@@ -3,8 +3,8 @@ package windowing
 import (
 	"image/color"
 
-	"github.com/hndada/mos/apps"
 	mosapp "github.com/hndada/mos/internal/app"
+	"github.com/hndada/mos/internal/apps"
 	"github.com/hndada/mos/internal/draws"
 )
 

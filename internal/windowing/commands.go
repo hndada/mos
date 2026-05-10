@@ -28,6 +28,7 @@ type CmdSetTitle struct{ Title string }
 type CmdSetAccentColor struct{ Color color.RGBA }
 type CmdSetKeepScreenOn struct{ Enabled bool }
 type CmdSetPreferredOrientation struct{ Orientation mosapp.Orientation }
+type CmdSetSecureContent struct{ Enabled bool }
 
 // CmdShowKeyboard / CmdHideKeyboard toggle the system soft keyboard.
 type CmdShowKeyboard struct{}
@@ -59,6 +60,9 @@ type CmdSetDarkMode struct{ Enabled bool }
 
 // CmdVibrate triggers simulated haptic feedback.
 type CmdVibrate struct{ Duration time.Duration }
+
+// CmdPlaySound triggers a short simulated system sound.
+type CmdPlaySound struct{ Sound mosapp.Sound }
 
 // CmdRequestFocus asks the windowing server to grant keyboard/IME focus to
 // the sending window. The server serialises focus; the previous holder's
